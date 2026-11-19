@@ -1,8 +1,8 @@
-# DV (Dado e Violeta)
+# DV
 
 **Research program for minimum-sufficient composition of software-engineering capabilities.**
 
-> Nome canônico: **DV** (Dado e Violeta). Os prefixos `ndv_` / `NDV` em ferramentas, workflows, experimentos, claims e evidência já existentes são legado: são mantidos sem renomeação por compatibilidade e rastreabilidade. Novos artefatos usam `dv`. Regra completa em [`AGENTS.md`](AGENTS.md) (seção "Nome canônico").
+> Nome canônico: **DV**. Os prefixos `ndv_` / `NDV` em ferramentas, workflows, experimentos, claims e evidência já existentes são legado: são mantidos sem renomeação por compatibilidade e rastreabilidade. Novos artefatos usam `dv`. Regra completa em [`AGENTS.md`](AGENTS.md) (seção "Nome canônico").
 
 DV investigates whether adaptive selection of the **smallest sufficient combination of capabilities** can improve the verified-success / total-cost / latency frontier relative to fixed execution strategies.
 

@@ -4,7 +4,7 @@ These rules apply to humans and automated coding/research agents working in this
 
 Este arquivo combina duas camadas que se aplicam simultaneamente; nenhuma substitui a outra:
 
-- **Parte A** — governança experimental do programa DV (Dado e Violeta), preservada integralmente.
+- **Parte A** — governança experimental do programa DV, preservada integralmente.
 - **Parte B** — adaptador de evidência/OSPS do template, incorporado integralmente.
 
 ## Operating posture
@@ -50,7 +50,7 @@ New NDV work belongs in this repository. Historical DV evidence remains authorit
 
 ## Nome canônico
 
-1. O nome canônico do programa e do repositório é **DV** (Dado e Violeta). Títulos, documentação e identificadores novos usam `DV` / `dv`. Novas ferramentas usam o prefixo `dv_` (por exemplo, `tools/dv_*.py`).
+1. O nome canônico do programa e do repositório é **DV**. Títulos, documentação e identificadores novos usam `DV` / `dv`. Novas ferramentas usam o prefixo `dv_` (por exemplo, `tools/dv_*.py`).
 2. `NDV` / `ndv` não é mais nome canônico. Nomes legados (`tools/ndv_*.py`, workflows `ndv`, experimentos, claims, schemas) são mantidos sem renomeação, porque workflows e evidência congelada os referenciam.
 3. Renomear arquivos, identificadores ou conteúdo congelado exige nova versão do contrato (regra 3 de Postura operacional) e a atualização de todas as referências no mesmo change, com verificação posterior.
 4. Não reescreva `ndv` em artefatos históricos ou evidência congelada. Ao citá-los, use o nome original e a referência de commit/hash.

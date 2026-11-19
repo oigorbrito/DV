@@ -12,6 +12,6 @@
     "evidence": null
   },
   "production_deployed": false,
-  "notes": "DV (Dado e Violeta) research program. Observed: no git tags; release.made=false; contributors in git history: 1 human maintainer plus 1 bot account; no LICENSE file committed (LICENSE-SELECT.md only); test suites in tools/ (run from tools/ cwd) and tests/ (harness). Record observable facts only. Product stage does not determine OSPS maturity.",
+  "notes": "DV research program. Observed: no git tags; release.made=false; contributors in git history: 1 human maintainer plus 1 bot account; no LICENSE file committed (LICENSE-SELECT.md only); test suites in tools/ (run from tools/ cwd) and tests/ (harness). Record observable facts only. Product stage does not determine OSPS maturity.",
   "enforce_local_gaps": false
 }
