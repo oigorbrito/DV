@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "product_stage": "research",
+  "osps_baseline_version": "2026.08.28",
+  "osps_target_level": 1,
+  "project_kind": "code",
+  "maintainers_count": 1,
+  "consistent_users": "unknown",
+  "release": {
+    "made": false,
+    "version": null,
+    "evidence": null
+  },
+  "production_deployed": false,
+  "notes": "DV research program. Observed: no git tags; release.made=false; contributors in git history: 1 human maintainer plus 1 bot account; no LICENSE file committed (LICENSE-SELECT.md only); test suites in tools/ (run from tools/ cwd) and tests/ (harness). Record observable facts only. Product stage does not determine OSPS maturity.",
+  "enforce_local_gaps": false
+}

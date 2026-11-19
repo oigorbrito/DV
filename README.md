@@ -1,10 +1,12 @@
-# NDV
+# DV
 
 **Research program for minimum-sufficient composition of software-engineering capabilities.**
 
-NDV investigates whether adaptive selection of the **smallest sufficient combination of capabilities** can improve the verified-success / total-cost / latency frontier relative to fixed execution strategies.
+> Nome canônico: **DV**. Os prefixos `ndv_` / `NDV` em ferramentas, workflows, experimentos, claims e evidência já existentes são legado: são mantidos sem renomeação por compatibilidade e rastreabilidade. Novos artefatos usam `dv`. Regra completa em [`AGENTS.md`](AGENTS.md) (seção "Nome canônico").
 
-NDV is **not an approved software architecture**.
+DV investigates whether adaptive selection of the **smallest sufficient combination of capabilities** can improve the verified-success / total-cost / latency frontier relative to fixed execution strategies.
+
+DV is **not an approved software architecture**.
 
 It is research-first, falsification-driven, and explicitly allows:
 
@@ -36,31 +38,31 @@ Models, agents, runtimes, verifiers, orchestrators, memory systems, routers, and
 
 ## Relationship to the other projects
 
-NDV is intentionally separated from the operational/product repositories.
+DV is intentionally separated from the operational/product repositories.
 
 ### CodePro
 
 CodePro is an executable software-engineering chassis with operational contracts, qualification tooling, telemetry, verification, and real-task evidence boundaries.
 
-NDV is broader and more research-oriented:
+DV is broader and more research-oriented:
 
 ```text
-NDV
+DV
   asks which capability composition should exist
 
 CodePro
   implements and measures a bounded software-engineering chassis
 ```
 
-NDV results may justify reuse, removal, or later experimentation in another system. They do not automatically promote a CodePro mechanism.
+DV results may justify reuse, removal, or later experimentation in another system. They do not automatically promote a CodePro mechanism.
 
 ### MetaO
 
 MetaO asks how to govern heterogeneous runtimes/orchestrators under an external control plane.
 
-NDV asks whether a composition/control layer is economically justified in the first place.
+DV asks whether a composition/control layer is economically justified in the first place.
 
-A valid NDV result could therefore be:
+A valid DV result could therefore be:
 
 ```text
 NO_ADDITIONAL_CONTROL_LAYER_REQUIRED
@@ -70,13 +72,13 @@ NO_ADDITIONAL_CONTROL_LAYER_REQUIRED
 
 Those projects have operational/governance responsibilities.
 
-NDV may study mechanisms related to execution, routing, handoff, decomposition, or composition, but research evidence remains separate from product promotion.
+DV may study mechanisms related to execution, routing, handoff, decomposition, or composition, but research evidence remains separate from product promotion.
 
 ---
 
 ## Core principle
 
-Use the ecosystem to NDV's advantage rather than rebuilding it.
+Use the ecosystem to DV's advantage rather than rebuilding it.
 
 Default engineering order:
 
@@ -145,7 +147,7 @@ FREE != ZERO_COST
 
 ## Scientific posture
 
-NDV starts from the assumption that its hypotheses may be wrong.
+DV starts from the assumption that its hypotheses may be wrong.
 
 ```text
 research
@@ -182,7 +184,7 @@ The current upstream-reuse phase is explicitly:
 REUSE_ONLY
 ```
 
-Before custom implementation is justified, NDV audits whether the required behavior already exists in upstream projects and can be reused through configuration, existing extension points, adapters, or bounded wrappers.
+Before custom implementation is justified, DV audits whether the required behavior already exists in upstream projects and can be reused through configuration, existing extension points, adapters, or bounded wrappers.
 
 The phase exits only when evidence supports one of two outcomes:
 
@@ -216,12 +218,12 @@ Negative evidence may eliminate later work entirely.
 
 Research tooling and contracts may exist to make experiments reproducible.
 
-That does **not** mean an NDV runtime has been approved.
+That does **not** mean an DV runtime has been approved.
 
 Current status:
 
 ```text
-NDV_RUNTIME            = NOT_APPROVED
+DV_RUNTIME            = NOT_APPROVED
 ROUTER                 = NOT_APPROVED
 ORCHESTRATOR           = NOT_APPROVED
 MEMORY_SYSTEM          = NOT_APPROVED
@@ -242,15 +244,50 @@ The program was previously maintained in `oigorbrito/dv`.
 
 Historical DV artifacts remain authoritative at their original repository and immutable commits.
 
-Prospective NDV work is canonical in this repository from the cutover recorded in:
+Prospective DV work is canonical in this repository from the cutover recorded in:
 
 ```text
 provenance/dv-legacy-manifest.json
 ```
 
-Historical evidence is not silently relabeled as new NDV evidence.
+Historical evidence is not silently relabeled as new DV evidence.
 
 ---
+
+## Verificação canônica
+
+Antes de afirmar que o repositório está pronto, execute a partir da raiz:
+
+```bash
+python scripts/harness.py
+python -m unittest discover -s tests -v
+```
+
+Os testes de tooling do programa (`tools/test_*.py`) rodam a partir do diretório `tools/`, porque alguns casos usam caminhos relativos (`../experiments/...`). É o mesmo padrão dos workflows `wp03`–`wp07`:
+
+```bash
+cd tools
+python -m unittest discover -p "test_*.py" -v
+```
+
+`scripts/harness.py` emite apenas estados fechados: `PASS`, `GAP`, `UNKNOWN_EXTERNAL` e `NOT_APPLICABLE`. Enquanto `enforce_local_gaps` for `false`, ele só reporta.
+
+## Estado e postura de maturidade
+
+- Estado legível por máquina: [`policy/project-state.json`](policy/project-state.json) (schema: `policy/project-state.schema.json`).
+- `product_stage` é descritivo e não tem efeito normativo. Rótulos como `research`, `MVP` ou `production` **não** promovem maturidade OSPS.
+- O alvo normativo é `osps_target_level` (atualmente `1`). Qualquer promoção exige evidência observável e versionada; nunca é automática.
+- Regra de evidência: `IMPLEMENTED != EXECUTED`, `EXECUTED != VERIFIED`. Controles de plataforma que o harness não consegue comprovar localmente ficam `UNKNOWN_EXTERNAL`.
+- Nenhum release observado (`release.made = false`, sem tags Git).
+- GAP local conhecido: ainda não há arquivo de licença commitado (apenas `LICENSE-SELECT.md`).
+
+Detalhes: [`docs/MATURITY.md`](docs/MATURITY.md), [`docs/TESTING.md`](docs/TESTING.md), [`AGENTS.md`](AGENTS.md).
+
+## Uso básico
+
+**STATUS: NOT_RELEASED**
+
+Não há release oficial. Este repositório é de pesquisa: use os comandos de verificação acima e consulte `docs/research/` para os protocolos experimentais. Antes de qualquer release, substitua esta seção por instruções reais de uso.
 
 ## Start here
 
