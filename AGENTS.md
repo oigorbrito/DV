@@ -74,6 +74,24 @@ Pontos de partida de governança: `docs/EXPERIMENTAL-GOVERNANCE.md`, `docs/EVIDE
 
 O histórico DV (repositório de origem, commits e hashes) está em `provenance/dv-legacy-manifest.json`. Evidência legada não é reclassificada como evidência DV.
 
+## Mapa de autoridade
+
+Cada tema tem uma única fonte. Os demais documentos apontam para ela e não repetem a regra.
+
+| Tema | Fonte autoritativa |
+|---|---|
+| Postura, verificação, proveniência e nome canônico | `AGENTS.md` (este arquivo) |
+| Níveis de evidência (E0–E4) e estados de afirmação | `docs/EVIDENCE-POLICY.md` |
+| Objetivo, métrica primária e vocabulário de decisão | `docs/PROJECT-OBJECTIVE.md` |
+| Protocolo experimental e regras de parada | `docs/EXPERIMENTAL-GOVERNANCE.md` |
+| Ordem de arquitetura e bloqueios por padrão | `docs/ARCHITECTURE-GOVERNANCE.md` |
+| Estado e critérios do reuso upstream | `docs/research/UPSTREAM-REUSE-PLAN.md` |
+| Protocolo Luna (D0, D1, D2) | `experiments/luna-only/luna-composition-protocol-v1.json` |
+| Maturidade OSPS | `docs/MATURITY.md` |
+| Estrutura observada do repositório | `docs/ARCHITECTURE.md` |
+| Testes e verificação canônica | `docs/TESTING.md` |
+| Próximas etapas (plano, não regra) | `docs/ROADMAP.md` |
+
 ## Parte B — Evidência e maturidade (template)
 
 Estas instruções são um adaptador do repositório construído sobre controles definidos externamente. Elas **não são, por si mesmas, um requisito do OpenSSF, NIST ou DORA**.

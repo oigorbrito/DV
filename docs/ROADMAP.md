@@ -11,7 +11,7 @@
 | Área | Estado verificável hoje | Nível de evidência |
 |---|---|---|
 | Governança e critérios | `EVIDENCE-POLICY`, `ARCHITECTURE-GOVERNANCE`, `PROJECT-OBJECTIVE` definidos | Documentação normativa |
-| Reuso upstream | `UPSTREAM-REUSE-PLAN` **ATIVO**, modo `REUSE_ONLY`. AOrchestra: execução confirmada. MaAS: bloqueado por reprodutibilidade. **Próximo: AgentSquare.** | E1 para AOrchestra; bloqueio documentado para MaAS |
+| Reuso upstream | Estado atual em `docs/research/UPSTREAM-REUSE-PLAN.md` (seção *Current audit state*) | Ver fonte |
 | WP-03 (harness determinístico) | `PASS` (CI verde na `main` e execução de 2026-09-16) | Verificado |
 | WP-04 (executor real) | Stage 1 executado uma vez (`SMOKE_VALID_FAILED`). Stage 2 **bloqueado**: bytes originais do binding e da qualificação não estão no repositório. Campanha **não fechada**. | Parcial |
 | WP-05 (executores locais gratuitos) | Endpoint Ollama qualificado. Binding v2 **pendente** de qualificação do scaffold. | Parcial |
@@ -33,7 +33,7 @@
 
 O roadmap precisa respeitar estas regras, que já estão no repositório. Elas definem o que pode e o que não pode virar código agora.
 
-1. **`UPSTREAM-REUSE-PLAN` está ATIVO.** Enquanto estiver ativo, não se implementa runtime, orquestrador, roteador, controlador adaptativo, framework de agentes nem sistema de memória. A única exceção é um **adaptador mínimo**, e só depois que o donor foi executado e um gap concreto ficou comprovado (critérios em §2 de `UPSTREAM-REUSE-PLAN.md`).
+1. **Reuso upstream:** a regra vigente está em `docs/research/UPSTREAM-REUSE-PLAN.md`. Este roadmap só inclui o que ela permite.
 2. **Código permitido agora** (lista de `ARCHITECTURE-GOVERNANCE.md`, "Artefatos mínimos específicos do DV candidatos"):
    - schema do Evidence Ledger;
    - schema do Execution Ledger;
@@ -43,7 +43,7 @@ O roadmap precisa respeitar estas regras, que já estão no repositório. Elas d
 3. **Código de experimento** é permitido quando serve a uma claim e a um protocolo congelado (ferramental de reprodutibilidade, sem arquitetura aprovada).
 4. **Não é permitido** começar pelo código: a ordem é `claim → experimento → evidência → decisão → arquitetura` (`EVIDENCE-POLICY.md`).
 5. **Dependência externa:** o SMAG não é dependência deste projeto. O README o descreve como ferramenta operacional separada. Este roadmap não depende dele.
-6. **"Copiar boas práticas" tem regra própria:** o reuso segue `REUSE → ADAPT → WRAP → FORK → BUILD`. Copiar código de um donor exige procedência (repositório, commit, licença, data), e não é permitido portar código sem mostrar antes que o reuso direto é impossível. Práticas documentadas podem ser adotadas diretamente, desde que a origem fique registrada.
+6. **Código copiado de fora:** a ordem de decisão e a exigência de procedência estão em `AGENTS.md` (Arquitetura padrão) e em `UPSTREAM-REUSE-PLAN.md` (procedência).
 
 ---
 

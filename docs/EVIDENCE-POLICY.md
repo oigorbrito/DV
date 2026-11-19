@@ -64,4 +64,4 @@ Resultados negativos, nulos e inconclusivos são desfechos de primeira classe. N
 
 ## Disciplina de parada
 
-Não alterar a seleção de tarefas, as repetições, as regras de parada, o método de análise ou a política de holdout porque um tratamento favorecido está na frente ou atrás.
+Regra fonte: `docs/EXPERIMENTAL-GOVERNANCE.md` (seções *Regras centrais* e *Regras de parada*).
