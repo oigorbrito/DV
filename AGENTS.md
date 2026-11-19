@@ -9,7 +9,7 @@ Este arquivo combina duas camadas que se aplicam simultaneamente; nenhuma substi
 
 ## Operating posture
 
-1. NDV is research-first. Do not implement a runtime, router, orchestrator, memory system, workflow engine, model gateway, generic agent framework, or adaptive controller unless an approved experiment and architecture gate explicitly require it.
+1. Decisões de arquitetura são derivadas de evidência, não prescritas. Um componente (runtime, roteador, orquestrador, memória, controlador) entra no DV somente quando um experimento congelado mostra que ele vence o núcleo na métrica pré-registrada. Antes disso, o núcleo é o referencial.
 2. Existing ecosystem capabilities must be evaluated for reuse before custom implementation.
 3. Experimental contracts are immutable after freeze. If semantics change, create a new version; do not silently edit frozen evidence.
 4. Historical artifacts in `oigorbrito/dv` must not be rewritten or rebranded as if they were originally NDV artifacts.
