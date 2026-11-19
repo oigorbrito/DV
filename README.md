@@ -1,14 +1,14 @@
 # DV
 
-**Research program for minimum-sufficient composition of software-engineering capabilities.**
+**Programa de pesquisa sobre composição mínima suficiente de capacidades de engenharia de software.**
 
 > Nome canônico: **DV**. Os prefixos `ndv_` / `NDV` em ferramentas, workflows, experimentos, claims e evidência já existentes são legado: são mantidos sem renomeação por compatibilidade e rastreabilidade. Novos artefatos usam `dv`. Regra completa em [`AGENTS.md`](AGENTS.md) (seção "Nome canônico").
 
-DV investigates whether adaptive selection of the **smallest sufficient combination of capabilities** can improve the verified-success / total-cost / latency frontier relative to fixed execution strategies.
+O DV investiga se a seleção adaptativa da **combinação mínima suficiente de capacidades** pode melhorar a fronteira sucesso verificado / custo total / latência em relação a estratégias de execução fixas.
 
-DV is **not an approved software architecture**.
+O DV **não é uma arquitetura de software aprovada**.
 
-It is research-first, falsification-driven, and explicitly allows:
+Ele é orientado a pesquisa e a refutação, e admite explicitamente estes resultados válidos:
 
 ```text
 NO_BUILD
@@ -16,35 +16,33 @@ REUSE_ONLY
 INCONCLUSIVE
 ```
 
-as valid outcomes.
+---
+
+## Pergunta de pesquisa
+
+A pergunta central não é:
+
+> Como construímos mais um orquestrador?
+
+Ela é:
+
+> **Quais capacidades são realmente necessárias para uma classe de tarefas de engenharia de software, e quando o benefício delas supera o custo total do sistema?**
+
+A unidade de análise é a **capacidade**, não a identidade do repositório.
+
+Modelos, agentes, runtimes, verificadores, orquestradores, sistemas de memória, roteadores e ferramentas futuras são tratados como mecanismos candidatos substituíveis.
 
 ---
 
-## Research question
+## Relação com os outros projetos
 
-The core question is not:
-
-> How do we build another orchestrator?
-
-It is:
-
-> **Which capabilities are actually necessary for a given class of software-engineering task, and when does their benefit exceed their total system cost?**
-
-The unit of analysis is **capability**, not repository identity.
-
-Models, agents, runtimes, verifiers, orchestrators, memory systems, routers, and future tools are treated as replaceable candidate mechanisms.
-
----
-
-## Relationship to the other projects
-
-DV is intentionally separated from the operational/product repositories.
+O DV é intencionalmente separado dos repositórios operacionais e de produto.
 
 ### CodePro
 
-CodePro is an executable software-engineering chassis with operational contracts, qualification tooling, telemetry, verification, and real-task evidence boundaries.
+CodePro é um chassi executável de engenharia de software, com contratos operacionais, ferramentas de qualificação, telemetria, verificação e limites de evidência em tarefas reais.
 
-DV is broader and more research-oriented:
+O DV é mais amplo e orientado a pesquisa:
 
 ```text
 DV
@@ -54,15 +52,15 @@ CodePro
   implements and measures a bounded software-engineering chassis
 ```
 
-DV results may justify reuse, removal, or later experimentation in another system. They do not automatically promote a CodePro mechanism.
+Resultados do DV podem justificar reuso, remoção ou experimentação posterior em outro sistema. Eles não promovem automaticamente um mecanismo do CodePro.
 
 ### MetaO
 
-MetaO asks how to govern heterogeneous runtimes/orchestrators under an external control plane.
+O MetaO pergunta como governar runtimes e orquestradores heterogêneos sob um plano de controle externo.
 
-DV asks whether a composition/control layer is economically justified in the first place.
+O DV pergunta, antes disso, se uma camada de composição ou de controle se justifica economicamente.
 
-A valid DV result could therefore be:
+Um resultado válido do DV pode, portanto, ser:
 
 ```text
 NO_ADDITIONAL_CONTROL_LAYER_REQUIRED
@@ -70,17 +68,17 @@ NO_ADDITIONAL_CONTROL_LAYER_REQUIRED
 
 ### SMAG / SMAG-ReX
 
-Those projects have operational/governance responsibilities.
+Esses projetos têm responsabilidades operacionais e de governança.
 
-DV may study mechanisms related to execution, routing, handoff, decomposition, or composition, but research evidence remains separate from product promotion.
+O DV pode estudar mecanismos de execução, roteamento, transferência, decomposição ou composição, mas a evidência de pesquisa permanece separada da promoção a produto.
 
 ---
 
-## Core principle
+## Princípio central
 
-Use the ecosystem to DV's advantage rather than rebuilding it.
+Use o ecossistema a favor do DV, em vez de reconstruí-lo.
 
-Default engineering order:
+Ordem padrão de engenharia:
 
 ```text
 REUSE
@@ -94,9 +92,9 @@ FORK
 BUILD CUSTOM
 ```
 
-A new layer must pay for its own overhead.
+Uma nova camada precisa se pagar com o próprio custo adicional.
 
-Default execution concept:
+Conceito padrão de execução:
 
 ```text
 minimum sufficient composition
@@ -110,11 +108,11 @@ continue / verify / retry / handoff / escalate / stop
 
 ---
 
-## Primary economic objective
+## Objetivo econômico principal
 
-Minimize complete system cost subject to a required probability of verified success.
+Minimizar o custo total do sistema sujeito a uma probabilidade exigida de sucesso verificado.
 
-Primary metric:
+Métrica primária:
 
 ```text
 TOTAL_SYSTEM_TOKENS
@@ -122,22 +120,22 @@ TOTAL_SYSTEM_TOKENS
 VERIFIED_SOLVED_TASK
 ```
 
-Token count alone is not the full cost model.
+A contagem de tokens, sozinha, não é o modelo completo de custo.
 
-Accounting retains:
+A contabilidade preserva:
 
-- monetary cost;
-- latency;
-- retries;
-- calls;
-- context;
-- verification;
-- routing;
-- handoff;
-- coordination;
-- compute;
-- failure cost;
-- operational complexity.
+- custo monetário;
+- latência;
+- novas tentativas;
+- chamadas;
+- contexto;
+- verificação;
+- roteamento;
+- transferência;
+- coordenação;
+- computação;
+- custo de falhas;
+- complexidade operacional.
 
 ```text
 FREE != ZERO_COST
@@ -145,9 +143,9 @@ FREE != ZERO_COST
 
 ---
 
-## Scientific posture
+## Postura científica
 
-DV starts from the assumption that its hypotheses may be wrong.
+O DV parte da premissa de que suas hipóteses podem estar erradas.
 
 ```text
 research
@@ -163,7 +161,7 @@ decision
 implementation only if justified
 ```
 
-Important rules:
+Regras importantes:
 
 ```text
 EXECUTOR_DONE != VERIFIED_SOLVED
@@ -172,55 +170,55 @@ UPSTREAM_FEATURE_EXISTS != LOCAL_NEED
 MECHANISM_AVAILABLE != MECHANISM_NECESSARY
 ```
 
-Mandatory architecture capabilities normally require holdout-confirmed evidence before becoming core.
+Capacidades arquiteturais obrigatórias normalmente exigem evidência confirmada em holdout antes de se tornarem centrais.
 
 ---
 
-## Current engineering mode
+## Modo de engenharia atual
 
-The current upstream-reuse phase is explicitly:
+A fase atual de reuso upstream é explicitamente:
 
 ```text
 REUSE_ONLY
 ```
 
-Before custom implementation is justified, DV audits whether the required behavior already exists in upstream projects and can be reused through configuration, existing extension points, adapters, or bounded wrappers.
+Antes que uma implementação customizada seja justificada, o DV verifica se o comportamento exigido já existe em projetos upstream e pode ser reutilizado por configuração, pontos de extensão existentes, adaptadores ou encapsulamentos limitados.
 
-The phase exits only when evidence supports one of two outcomes:
+A fase só termina quando a evidência sustenta um de dois desfechos:
 
-1. upstream capability is sufficient -> `REUSE_ONLY` / `NO_BUILD`;
-2. a concrete gap remains and cannot be closed without new implementation.
+1. a capacidade upstream é suficiente -> `REUSE_ONLY` / `NO_BUILD`;
+2. resta uma lacuna concreta que não pode ser fechada sem nova implementação.
 
-See:
+Veja:
 
-- [Upstream Reuse Plan](docs/research/UPSTREAM-REUSE-PLAN.md)
-- [Upstream Audit Harness](docs/research/UPSTREAM-AUDIT-HARNESS.md)
-
----
-
-## Experimental program
-
-The research program is staged:
-
-- **P1** — executor and routing economics
-- **P2** — continuity and handoff
-- **P3** — composition selection
-- **P4** — sequential adaptive control
-- **P5** — integrated-system validation
-
-Later phases do not start merely because an earlier phase exists.
-
-Negative evidence may eliminate later work entirely.
+- [Plano de reuso upstream](docs/research/UPSTREAM-REUSE-PLAN.md)
+- [Harness de auditoria upstream](docs/research/UPSTREAM-AUDIT-HARNESS.md)
 
 ---
 
-## Current implementation boundary
+## Programa experimental
 
-Research tooling and contracts may exist to make experiments reproducible.
+O programa de pesquisa é dividido em etapas:
 
-That does **not** mean a DV runtime has been approved.
+- **P1** — economia de executor e de roteamento
+- **P2** — continuidade e transferência
+- **P3** — seleção de composição
+- **P4** — controle adaptativo sequencial
+- **P5** — validação do sistema integrado
 
-Current status:
+Fases posteriores não começam só porque uma fase anterior existe.
+
+Evidência negativa pode eliminar trabalho posterior por completo.
+
+---
+
+## Limite atual de implementação
+
+Ferramentas e contratos de pesquisa podem existir para tornar os experimentos reproduzíveis.
+
+Isso **não** significa que um runtime do DV tenha sido aprovado.
+
+Estado atual:
 
 ```text
 DV_RUNTIME            = NOT_APPROVED
@@ -232,25 +230,25 @@ MODEL_GATEWAY          = NOT_APPROVED
 CONTROLLER             = NOT_APPROVED
 ```
 
-This distinction is intentional.
+Essa distinção é intencional.
 
-Research infrastructure may be implemented while the architecture being studied remains unselected.
+Infraestrutura de pesquisa pode ser implementada enquanto a arquitetura estudada continua não selecionada.
 
 ---
 
-## Historical provenance
+## Proveniência histórica
 
-The program was previously maintained in `oigorbrito/dv`.
+O programa era mantido anteriormente em `oigorbrito/dv`.
 
-Historical DV artifacts remain authoritative at their original repository and immutable commits.
+Os artefatos históricos do DV continuam autoritativos no repositório de origem e nos commits imutáveis originais.
 
-Prospective DV work is canonical in this repository from the cutover recorded in:
+O trabalho prospectivo do DV é canônico neste repositório a partir do corte registrado em:
 
 ```text
 provenance/dv-legacy-manifest.json
 ```
 
-Historical evidence is not silently relabeled as new DV evidence.
+Evidência histórica não é reclassificada silenciosamente como nova evidência do DV.
 
 ---
 
@@ -289,14 +287,14 @@ Detalhes: [`docs/MATURITY.md`](docs/MATURITY.md), [`docs/TESTING.md`](docs/TESTI
 
 Não há release oficial. Este repositório é de pesquisa: use os comandos de verificação acima e consulte `docs/research/` para os protocolos experimentais. Antes de qualquer release, substitua esta seção por instruções reais de uso.
 
-## Start here
+## Comece aqui
 
-Before changing the research program:
+Antes de alterar o programa de pesquisa:
 
-- read [AGENTS.md](AGENTS.md);
-- read the governance and research documents under [docs/](docs/);
-- preserve exact source/revision/environment identity for decision-bearing experiments.
+- leia [AGENTS.md](AGENTS.md);
+- leia os documentos de governança e de pesquisa em [docs/](docs/);
+- preserve a identidade exata de fonte, revisão e ambiente de qualquer experimento que sustente uma decisão.
 
-The desired outcome is not “more architecture”.
+O resultado desejado não é "mais arquitetura".
 
-The desired outcome is **the smallest composition that survives evidence**.
+O resultado desejado é **a menor composição que sobrevive à evidência**.
