@@ -83,6 +83,42 @@
       "phase": "ALL",
       "architecture_implication": "reuse-first engineering",
       "retest_triggers": ["NEW_PRIOR_ART", "MAJOR_HARNESS_CHANGE"]
+    },
+    {
+      "claim_id": "C-T1",
+      "statement": "Staging rule-based elision before LLM summarization reduces TOTAL_SYSTEM_TOKENS / VERIFIED_SOLVED_TASK without accuracy loss relative to LLM-only summarization.",
+      "status": "UNTESTED",
+      "evidence_level": "E0",
+      "phase": "P2",
+      "architecture_implication": "context compaction capability",
+      "retest_triggers": ["NEW_FRONTIER_EXECUTOR", "MAJOR_HARNESS_CHANGE", "TASK_DISTRIBUTION_SHIFT", "NEW_PRIOR_ART"]
+    },
+    {
+      "claim_id": "C-T2",
+      "statement": "Reversible recall of elided context yields net gain over elision-only compaction; otherwise it adds overhead without accuracy gain.",
+      "status": "UNTESTED",
+      "evidence_level": "E0",
+      "phase": "P2",
+      "architecture_implication": "context recall capability",
+      "retest_triggers": ["NEW_FRONTIER_EXECUTOR", "MAJOR_HARNESS_CHANGE", "NEW_PRIOR_ART"]
+    },
+    {
+      "claim_id": "C-P1",
+      "statement": "An explicit planning scaffold improves verified success for weaker executors, while for stronger executors it acts only as a cost reducer or as overhead.",
+      "status": "UNTESTED",
+      "evidence_level": "E0",
+      "phase": "P3",
+      "architecture_implication": "planning scaffold conditional on executor capability",
+      "retest_triggers": ["NEW_FRONTIER_EXECUTOR", "PRICE_SHIFT", "MAJOR_HARNESS_CHANGE"]
+    },
+    {
+      "claim_id": "C-S1",
+      "statement": "A minimal shell-only action space and a structured tool set differ in cost and verified success by task class and executor capability, with no single interface dominating.",
+      "status": "UNTESTED",
+      "evidence_level": "E0",
+      "phase": "P3",
+      "architecture_implication": "action-space interface selection",
+      "retest_triggers": ["NEW_FRONTIER_EXECUTOR", "PRICE_SHIFT", "TASK_DISTRIBUTION_SHIFT"]
     }
   ]
 }
