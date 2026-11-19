@@ -1,0 +1,121 @@
+name: run-claim-experiment
+
+# Controlled, manually triggered gate for a single claim experiment (baseline vs. treatment).
+# Default is dry_run=true: validate and plan only. No arm is executed by this workflow today:
+# the execution adapter is intentionally not implemented, so execute-requested runs fail closed.
+# Verified success is never claimed here, and claim status is never promoted automatically.
+
+on:
+  workflow_dispatch:
+    inputs:
+      claim_id:
+        description: "Claim ID in claims/claims-v1.json (e.g. C-R1)"
+        required: true
+        type: string
+      baseline_setting:
+        description: "Treatment ID for the baseline arm (e.g. B0)"
+        required: true
+        type: string
+      treatment_setting:
+        description: "Treatment ID for the treatment arm (e.g. B1)"
+        required: true
+        type: string
+      corpus_slice:
+        description: "Frozen corpus slice ID declared in experiments/p1/claim-experiment-registry-v1.json"
+        required: true
+        type: string
+      max_budget_usd:
+        description: "Hard spend cap in USD (gate ceiling: 10.00)"
+        required: true
+        default: "2.00"
+        type: string
+      dry_run:
+        description: "Plan and validate only (no execution)"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: claim-experiment-${{ inputs.claim_id }}
+  cancel-in-progress: false
+
+jobs:
+  experiment:
+    name: claim ${{ inputs.claim_id }} (${{ inputs.dry_run && 'dry-run' || 'execute-requested' }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate and plan (claim experiment gate)
+        id: plan
+        shell: bash
+        env:
+          CLAIM_ID: ${{ inputs.claim_id }}
+          BASELINE: ${{ inputs.baseline_setting }}
+          TREATMENT: ${{ inputs.treatment_setting }}
+          CORPUS_SLICE: ${{ inputs.corpus_slice }}
+          MAX_BUDGET_USD: ${{ inputs.max_budget_usd }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          # Read only by the gate to test presence. The value is never printed.
+          DV_EXECUTOR_API_KEY: ${{ secrets.DV_EXECUTOR_API_KEY }}
+        run: |
+          set -uo pipefail
+          mkdir -p artifacts
+          MODE_FLAG=""
+          if [ "$DRY_RUN" != "true" ]; then MODE_FLAG="--execute"; fi
+          python tools/dv_claim_experiment_gate.py \
+            --claim-id "$CLAIM_ID" \
+            --baseline "$BASELINE" \
+            --treatment "$TREATMENT" \
+            --corpus-slice "$CORPUS_SLICE" \
+            --max-budget-usd "$MAX_BUDGET_USD" \
+            $MODE_FLAG \
+            --out artifacts/plan.json \
+            --summary-md artifacts/plan.md
+          code=$?
+          if [ -f artifacts/plan.md ]; then cat artifacts/plan.md >> "$GITHUB_STEP_SUMMARY"; fi
+          exit $code
+
+      - name: Execution adapter (execute-requested only)
+        if: ${{ !inputs.dry_run }}
+        shell: bash
+        run: |
+          echo "::error::Gate reported READY_FOR_EXECUTION, but no execution adapter is implemented in this workflow. No arm was executed; failing closed." >&2
+          exit 1
+
+      - name: Verify oracle isolation (post-run)
+        if: ${{ always() && hashFiles('artifacts/plan.json') != '' }}
+        shell: bash
+        run: python tools/dv_claim_experiment_gate.py --verify-manifest artifacts/plan.json
+
+      - name: Accounting summary (only if arm rows exist)
+        if: always()
+        shell: bash
+        run: |
+          if [ -f artifacts/arm-rows.json ]; then
+            python tools/dv_claim_experiment_report.py artifacts/arm-rows.json --out-dir artifacts/summary
+            cat artifacts/summary/summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No arm rows were produced. No arm was executed; verified success is not claimed." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: claim-experiment-${{ inputs.claim_id }}-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 30

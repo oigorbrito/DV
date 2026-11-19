@@ -1,0 +1,21 @@
+{
+  "schema_id": "dv-claim-experiment-registry-v1",
+  "status": "NO_FROZEN_DESIGNS",
+  "purpose": "Frozen experimental designs that map a claim_id to a paired baseline/treatment comparison. dv_claim_experiment_gate.py refuses any request whose claim has no entry here.",
+  "treatment_identity_source": "experiments/p1/wp07-treatment-bindings-v1.json",
+  "claim_status_source": "claims/claims-v1.json",
+  "design_required_fields": {
+    "corpus_slices": "map slice_id -> {path, sha256}; frozen corpus slices only",
+    "verifier_files": "list of {path, sha256}; oracle/verifier files pinned and re-checked after execution",
+    "runs_per_arm": "positive integer; frozen repetition count",
+    "estimated_usd_per_run": "map treatment_id -> positive number; pre-run estimate used for the budget gate",
+    "timeouts_ms": "frozen executor and run timeouts (informational until the execution adapter exists)"
+  },
+  "rules": {
+    "unbound_treatment_blocks_cell": true,
+    "estimate_missing_blocks_run": true,
+    "design_change_requires_new_revision": true,
+    "promotion_is_never_automatic": true
+  },
+  "designs": {}
+}
