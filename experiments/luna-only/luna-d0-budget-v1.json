@@ -1,8 +1,8 @@
 {
   "schema_id": "dv-luna-d0-budget-v1",
-  "status": "UNFROZEN_TEMPLATE",
+  "status": "DEFERRED_NOT_IN_USE",
   "treatment": "D0",
-  "note": "Template only. The Luna protocol requires frozen per-invocation ceilings before any task exposure. Values must be chosen and frozen by the maintainer before the D0 runner will plan any task. No value has been invented here.",
+  "note": "Ignorado nesta fase: a execução via API não está em uso. O runner D0 continua recusando planejar enquanto o orçamento não for FROZEN. Não preencher nem congelar valores até que a execução seja reaberta.",
   "executor_timeout_ms": null,
   "verification_timeout_ms": null,
   "retry_limit": 0,

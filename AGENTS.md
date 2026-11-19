@@ -68,7 +68,7 @@ MECHANISM_AVAILABLE != MECHANISM_NECESSARY
 
 Modo de engenharia atual: `REUSE_ONLY` (ver README). Fases experimentais P1–P5 não começam só porque uma fase anterior existe.
 
-Pontos de partida de governança: `docs/EXPERIMENTAL-GOVERNANCE.md`, `docs/EVIDENCE-POLICY.md`, `docs/research/EXPERIMENTAL-PROGRAM.md`, `docs/research/UPSTREAM-REUSE-PLAN.md`.
+Pontos de partida de governança: `docs/EXPERIMENTAL-GOVERNANCE.md`, `docs/EVIDENCE-POLICY.md`, `docs/research/UPSTREAM-REUSE-PLAN.md`.
 
 ## Inventário de proveniência DV
 

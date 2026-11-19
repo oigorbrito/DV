@@ -5,7 +5,7 @@ on:
     paths:
       - 'experiments/luna-only/**'
       - 'docs/research/LUNA-ONLY-COMPOSITION-TRACK.md'
-      - 'docs/research/EXPERIMENTAL-PROGRAM.md'
+      - 'docs/EXPERIMENTAL-GOVERNANCE.md'
       - 'tools/ndv_validate_luna_only_composition_contracts.py'
       - 'tools/ndv_compile_luna_composition_prompt.py'
       - 'tools/ndv_qualify_luna_composition_planner.py'
@@ -15,7 +15,7 @@ on:
     paths:
       - 'experiments/luna-only/**'
       - 'docs/research/LUNA-ONLY-COMPOSITION-TRACK.md'
-      - 'docs/research/EXPERIMENTAL-PROGRAM.md'
+      - 'docs/EXPERIMENTAL-GOVERNANCE.md'
       - 'tools/ndv_validate_luna_only_composition_contracts.py'
       - 'tools/ndv_compile_luna_composition_prompt.py'
       - 'tools/test_ndv_luna_only_composition.py'

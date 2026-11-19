@@ -96,7 +96,7 @@ Protocolo: `experiments/luna-only/luna-composition-protocol-v1.json`. Tratamento
 | R3.2 | Quarentena e base audit | Para cada um dos 6 candidatos: base run em Docker | Relatório de base audit por candidato | **Máquina local com Docker** |
 | R3.3 | Oráculo e admissão | `ndv_freeze_s2_admission.py` gera `ADMITTED_FROZEN` por candidato que passa | Registro imutável; candidatos reprovados também registrados | R3.2 |
 
-**Meta de saída da fase:** pelo menos o número de tarefas exigido por `P1_COMPARATIVE_READY` (definido em `EXPERIMENTAL-PROGRAM.md`). Hoje o número é **zero**.
+**Meta de saída da fase:** pelo menos o número de tarefas exigido por `P1_COMPARATIVE_READY` (definido em `EXPERIMENTAL-GOVERNANCE.md`, seção *Programa e trilha ativa*). Hoje o número é **zero**.
 
 ### Fase R4 — Fechar pendências de WP-04 e WP-05
 
@@ -157,3 +157,12 @@ R1 e R2.1 são o trabalho de código que **pode começar agora** sem violar a go
 Estado no repositório: o runner recusa com `D0 budget is 'UNFROZEN_TEMPLATE'`, e não há nenhum registro `ADMITTED_FROZEN`, então nenhuma tarefa seria planejada mesmo com orçamento congelado.
 
 Próximo passo: **R2.2** (execução) só pode começar depois de três coisas: orçamento congelado, pelo menos uma admissão `ADMITTED_FROZEN` e a definição do total de tokens (R1.2).
+
+---
+
+## 8. Decisões pendentes (não definir por ora)
+
+- **Nome por extenso da sigla DV:** pendente. Não adotar "Dynamic Vision" nem outra forma até a decisão do mantenedor.
+- **Orçamento do D0:** ignorado nesta fase (`DEFERRED_NOT_IN_USE`), porque a execução via API não está em uso.
+- **Lista de leitura obrigatória da parte B do `AGENTS.md`:** pendente (etapa 3 da reconciliação).
+
