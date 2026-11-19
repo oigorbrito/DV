@@ -6,7 +6,7 @@ Este arquivo começa intencionalmente pequeno. Ele deve descrever a arquitetura 
 
 ## Finalidade
 
-Programa de pesquisa DV (Dado e Violeta) sobre composição mínima suficiente de capacidades de engenharia de software. Ver `README.md`. Nenhuma arquitetura de runtime foi aprovada.
+Programa de pesquisa DV sobre composição mínima suficiente de capacidades de engenharia de software. Ver `README.md`. Nenhuma arquitetura de runtime foi aprovada.
 
 ## Limite do sistema
 
