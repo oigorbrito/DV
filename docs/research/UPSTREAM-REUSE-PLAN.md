@@ -78,7 +78,7 @@ The primary donor gates are ordered:
 Secondary infrastructure and evidence sources include:
 
 - **TwinRouterBench / Agent-as-a-Router** — routing and cost/capability evaluation infrastructure.
-- **OpenHands / SWE-bench / TerminalBench** — software-engineering execution and verification infrastructure.
+- **OpenHands / SWE-bench / Terminal-Bench 2.1** — software-engineering execution and verification infrastructure. Prefer Terminal-Bench 2.1 over 2.0 and SWE-Bench Pro V2 over earlier SWE-bench splits; see `docs/research/EXTERNAL-FINDINGS-2026.md`.
 
 This is a gated research queue, not an integration mandate. Do not audit the next donor merely because it is listed. Advance only when the current donor leaves a contract-relevant gap. If a donor closes the gap, stop for that contract.
 
@@ -133,6 +133,8 @@ Prefer, in order:
 3. an existing external benchmark already accepted by the relevant research community;
 4. a thin NDV integration check;
 5. a new NDV benchmark only when the required property cannot be measured by the previous four options.
+
+External benchmark version preference for future references and notes (Terminal-Bench 2.1, SWE-Bench Pro V2, Compact-Bench for post-compaction metrics) is recorded in `docs/research/EXTERNAL-FINDINGS-2026.md`.
 
 A new test must answer a specific unresolved NDV question. Do not create test matrices merely because they are possible.
 
