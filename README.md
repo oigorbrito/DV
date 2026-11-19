@@ -218,7 +218,7 @@ Negative evidence may eliminate later work entirely.
 
 Research tooling and contracts may exist to make experiments reproducible.
 
-That does **not** mean an DV runtime has been approved.
+That does **not** mean a DV runtime has been approved.
 
 Current status:
 

@@ -46,7 +46,7 @@ Verification must be attributable, versioned, reproducible, and independent of t
 
 ## Provenance
 
-New NDV work belongs in this repository. Historical DV evidence remains authoritative at its original source repository/commit. Reference legacy artifacts by repository, path, commit and hash when needed.
+New DV work belongs in this repository. Historical DV evidence remains authoritative at its original source repository/commit. Reference legacy artifacts by repository, path, commit and hash when needed.
 
 ## Nome canônico
 

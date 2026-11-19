@@ -34,7 +34,7 @@
 O roadmap precisa respeitar estas regras, que já estão no repositório. Elas definem o que pode e o que não pode virar código agora.
 
 1. **`UPSTREAM-REUSE-PLAN` está ATIVO.** Enquanto estiver ativo, não se implementa runtime, orquestrador, roteador, controlador adaptativo, framework de agentes nem sistema de memória. A única exceção é um **adaptador mínimo**, e só depois que o donor foi executado e um gap concreto ficou comprovado (critérios em §2 de `UPSTREAM-REUSE-PLAN.md`).
-2. **Código permitido agora** (lista de `ARCHITECTURE-GOVERNANCE.md`, "Candidate minimal NDV-specific artifacts"):
+2. **Código permitido agora** (lista de `ARCHITECTURE-GOVERNANCE.md`, "Artefatos mínimos específicos do DV candidatos"):
    - schema do Evidence Ledger;
    - schema do Execution Ledger;
    - contrato mínimo `VerificationResult`;
@@ -120,7 +120,7 @@ Protocolo: `experiments/luna-only/luna-composition-protocol-v1.json`. Tratamento
 
 ## 4. O que **não** entra neste roadmap (por governança)
 
-- Orquestrador, roteador, controlador adaptativo, memória persistente, gateway de modelos ou framework de agentes do NDV/DV. Estão `NOT_APPROVED` no README e bloqueados por padrão no `ARCHITECTURE-GOVERNANCE.md`.
+- Orquestrador, roteador, controlador adaptativo, memória persistente, gateway de modelos ou framework de agentes do DV. Estão `NOT_APPROVED` no README e bloqueados por padrão no `ARCHITECTURE-GOVERNANCE.md`.
 - Reescrever ou "consertar" AOrchestra ou MaAS para ganhar evidência (vetado no `UPSTREAM-REUSE-PLAN`).
 - Qualquer dependência do SMAG.
 - Executar tratamentos antes de R3 (sem corpus admitido, nenhum tratamento pode ser executado).
