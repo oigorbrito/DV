@@ -166,3 +166,10 @@ Próximo passo: **R2.2** (execução) só pode começar depois de três coisas: 
 - **Orçamento do D0:** ignorado nesta fase (`DEFERRED_NOT_IN_USE`), porque a execução via API não está em uso.
 - **Lista de leitura obrigatória da parte B do `AGENTS.md`:** pendente (etapa 3 da reconciliação).
 
+
+## 9. Telemetria (decisão e status)
+
+- **Decisão:** formato JSON, um arquivo por invocação em `<pasta-da-execução>/telemetry/<invocation_id>.json`.
+- **Implementação:** `tools/dv_telemetry.py`, validado pelo contrato `invocation_record` de `tools/dv_ledgers.py`. Recusa registros inválidos, identificadores inseguros e sobrescrita.
+- **Regra:** execução sem registros é `UNMEASURED`, nunca zero.
+- **Limite:** registra e lê evidência. Não coleta em tempo real, não exporta métricas e não tem painel. Ferramentas externas de telemetria (CodePro) continuam fora deste repositório.
