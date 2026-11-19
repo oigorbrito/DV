@@ -278,8 +278,8 @@ python -m unittest discover -p "test_*.py" -v
 - `product_stage` é descritivo e não tem efeito normativo. Rótulos como `research`, `MVP` ou `production` **não** promovem maturidade OSPS.
 - O alvo normativo é `osps_target_level` (atualmente `1`). Qualquer promoção exige evidência observável e versionada; nunca é automática.
 - Regra de evidência: `IMPLEMENTED != EXECUTED`, `EXECUTED != VERIFIED`. Controles de plataforma que o harness não consegue comprovar localmente ficam `UNKNOWN_EXTERNAL`.
-- Nenhum release observado (`release.made = false`, sem tags Git).
-- GAP local conhecido: ainda não há arquivo de licença commitado (apenas `LICENSE-SELECT.md`).
+- `release.made = false`. A única tag Git (`legacy-dv-cutover-66f3a21`) é um marco histórico, não um release; o harness ainda a trata como release observado (ver GAPs de release).
+- Licença: MIT, em `LICENSE`.
 
 Detalhes: [`docs/MATURITY.md`](docs/MATURITY.md), [`docs/TESTING.md`](docs/TESTING.md), [`AGENTS.md`](AGENTS.md).
 
