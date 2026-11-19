@@ -111,7 +111,7 @@ Antes de alterar código ou documentação:
    - `UNKNOWN_EXTERNAL`: o requisito depende de um estado do repositório/plataforma que este harness não consegue comprovar localmente.
    - `NOT_APPLICABLE`: o gatilho documentado não é atualmente verdadeiro.
 5. Rótulos do produto como `prototype`, `MVP` ou `production` são apenas descritivos. Eles não promovem a maturidade OSPS.
-6. Se um release for observado (arquivo de estado com `release.made=true` ou tag de release no padrão `vX.Y.Z`), execute as verificações condicionadas ao release e relate cada nova lacuna aplicável. Tags de marco histórico não são releases.
+6. Se um release for observado (arquivo de estado com `release.made=true` ou pelo menos duas tags Git), execute as verificações condicionadas ao release e relate cada nova lacuna aplicável. Uma única tag não conta como release.
 7. Se o número de mantenedores ou a população de usuários mudar materialmente, sinalize `MATURITY_REASSESSMENT_REQUIRED`; não promova silenciosamente o nível-alvo.
 8. Não adicione uma afirmação de segurança, release, arquitetura ou conformidade sem que a evidência de suporte seja versionada ou verificável externamente.
 9. Prefira a menor alteração que feche uma lacuna documentada. Não adicione controles apenas por aparência.
