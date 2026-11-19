@@ -141,3 +141,19 @@ Protocolo: `experiments/luna-only/luna-composition-protocol-v1.json`. Tratamento
 `R0.5 → R0.1 → R0.2 → R1 (em paralelo com R3) → R4 → R2.1 → R2.2–R2.5 (após R3) → R5`
 
 R1 e R2.1 são o trabalho de código que **pode começar agora** sem violar a governança. R2.2 em diante depende de corpus admitido, que hoje é o gargalo real.
+
+---
+
+## 7. Status de execução (R1 e R2.1)
+
+| ID | Entregue | Verificação | Limitação registrada |
+|---|---|---|---|
+| R1.1 | `experiments/schemas/dv-evidence-contracts-v1.json` + regras em `tools/dv_ledgers.py` (evidence record) | `tools/test_dv_ledgers.py` | Nenhuma evidência existente no repositório está nesse formato. O validador **não** foi aplicado retroativamente, para não reescrever histórico. |
+| R1.2 | Invocation record e `summarize_treatment` (componentes de tokens, falhas contadas) | Testes de falha contada e de tratamento incorreto | **Total de tokens não definido.** Não se sabe se `input_tokens` inclui `cached_input_tokens`. Por isso o total fica `UNRESOLVED`. |
+| R1.3 | `VerificationResult` com independência do verificador e regra "PASS exige três condições" | `is_verified_solved` ignora o relato do executor | Nenhum verificador real foi vinculado ainda. |
+| R1.4 | `CapabilityProfile` com vocabulário de `UPSTREAM-REUSE-PLAN` | Teste de dimensão fixa vs. mutável | Não preenchido para nenhum executor real. |
+| R2.1 | `tools/dv_d0_runner.py`, modo dry-run | Recusa com orçamento não congelado; nunca inicia processo (testado com `subprocess` substituído por erro) | `experiments/luna-only/luna-d0-budget-v1.json` está `UNFROZEN_TEMPLATE` com valores `null`. **Você precisa escolher e congelar os limites** antes que o runner planeje qualquer tarefa. |
+
+Estado no repositório: o runner recusa com `D0 budget is 'UNFROZEN_TEMPLATE'`, e não há nenhum registro `ADMITTED_FROZEN`, então nenhuma tarefa seria planejada mesmo com orçamento congelado.
+
+Próximo passo: **R2.2** (execução) só pode começar depois de três coisas: orçamento congelado, pelo menos uma admissão `ADMITTED_FROZEN` e a definição do total de tokens (R1.2).
