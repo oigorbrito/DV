@@ -95,6 +95,22 @@ def recognized_license(root: Path = ROOT) -> bool:
     return any((root / name).exists() for name in ("LICENSE", "COPYING", "LICENSES"))
 
 
+def project_test_files(root: Path = ROOT) -> list[Path]:
+    tests_dir = root / "tests"
+    if not tests_dir.exists():
+        return []
+    patterns = (
+        "test_*.py", "*_test.py",
+        "*.test.ts", "*.spec.ts", "*.test.js", "*.spec.js",
+        "*Tests.cs", "*Test.cs", "*.Tests.csproj",
+        "*_test.go", "*.test.rs",
+    )
+    found: list[Path] = []
+    for pat in patterns:
+        found.extend(tests_dir.rglob(pat))
+    return [p for p in found if p.name != "test_harness.py"]
+
+
 def findings(state: dict, root: Path = ROOT) -> list[Finding]:
     f: list[Finding] = []
     level = state["osps_target_level"]
@@ -117,7 +133,7 @@ def findings(state: dict, root: Path = ROOT) -> list[Finding]:
 
     # Implementation means a project test suite should no longer be just the template tests.
     if source_files_present(root):
-        project_tests = [p for p in (root/"tests").glob("test_*.py") if p.name != "test_harness.py"]
+        project_tests = project_test_files(root)
         f.append(Finding(PASS if project_tests else GAP, "DORA-CI-ADAPTER",
                          "Project-specific tests found." if project_tests else "Implementation exists but only harness tests were found; add project-specific automated tests."))
     else:

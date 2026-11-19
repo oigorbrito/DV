@@ -20,6 +20,12 @@ python -m unittest discover -s tests -v
 
 ## Checklist de primeiro uso
 
+Você pode executar o setup automático:
+```bash
+python scripts/bootstrap.py
+```
+
+Ou seguir os passos manuais:
 1. Substitua o nome e a finalidade do projeto abaixo.
 2. Selecione uma licença real e salve-a como `LICENSE` (consulte `LICENSE-SELECT.md`).
 3. Atualize `policy/project-state.json` somente com fatos observáveis.

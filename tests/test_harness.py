@@ -43,5 +43,18 @@ class HarnessTests(unittest.TestCase):
         fs = h.findings(s, ROOT)
         self.assertTrue(any(x.control == "OSPS-AC-03.01" and x.status == h.UNKNOWN for x in fs))
 
+    def test_multistack_test_detection(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            (tmp / "tests").mkdir()
+            (tmp / "tests" / "AppTests.cs").write_text("// test", encoding="utf-8")
+            (tmp / "tests" / "app.test.ts").write_text("// test", encoding="utf-8")
+            (tmp / "tests" / "test_harness.py").write_text("# harness", encoding="utf-8")
+            found = h.project_test_files(tmp)
+            names = {p.name for p in found}
+            self.assertIn("AppTests.cs", names)
+            self.assertIn("app.test.ts", names)
+            self.assertNotIn("test_harness.py", names)
+
 if __name__ == "__main__":
     unittest.main()
