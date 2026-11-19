@@ -9,10 +9,10 @@ Este arquivo combina duas camadas que se aplicam simultaneamente; nenhuma substi
 
 ## Operating posture
 
-1. DV is research-first. Do not implement a runtime, router, orchestrator, memory system, workflow engine, model gateway, generic agent framework, or adaptive controller unless an approved experiment and architecture gate explicitly require it.
+1. NDV is research-first. Do not implement a runtime, router, orchestrator, memory system, workflow engine, model gateway, generic agent framework, or adaptive controller unless an approved experiment and architecture gate explicitly require it.
 2. Existing ecosystem capabilities must be evaluated for reuse before custom implementation.
 3. Experimental contracts are immutable after freeze. If semantics change, create a new version; do not silently edit frozen evidence.
-4. Historical artifacts in `oigorbrito/dv` must not be rewritten or rebranded as if they were originally DV artifacts.
+4. Historical artifacts in `oigorbrito/dv` must not be rewritten or rebranded as if they were originally NDV artifacts.
 5. Executor-reported success is not verified success. Independent verification governs acceptance.
 6. Account for complete system cost, including failures, routing, shaping, context, planning, execution, handoff, verification, retries, latency, local hardware/energy where reliable, and coordination overhead.
 7. `NO_BUILD`, `REUSE_ONLY`, `REFUTED_IN_SCOPE`, and `INCONCLUSIVE` are valid outcomes.
@@ -46,7 +46,7 @@ Verification must be attributable, versioned, reproducible, and independent of t
 
 ## Provenance
 
-New DV work belongs in this repository. Historical DV evidence remains authoritative at its original source repository/commit. Reference legacy artifacts by repository, path, commit and hash when needed.
+New NDV work belongs in this repository. Historical DV evidence remains authoritative at its original source repository/commit. Reference legacy artifacts by repository, path, commit and hash when needed.
 
 ## Nome canônico
 
