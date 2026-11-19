@@ -1,5 +1,7 @@
 Use `AGENTS.md` as the repository-wide evidence contract.
 
+Core principle: **IMPLEMENTED != EXECUTED, EXECUTED != VERIFIED**.
+
 Before implementation, read `policy/project-state.json` and the documents under `docs/`.
 Treat `PASS`, `GAP`, `UNKNOWN_EXTERNAL`, and `NOT_APPLICABLE` as distinct states.
 Do not claim tests, builds, checks, releases, maturity levels, or security controls passed unless the relevant evidence was actually executed or observed.

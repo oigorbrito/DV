@@ -2,6 +2,10 @@
 
 Estas instruções são um adaptador do repositório construído sobre controles definidos externamente. Elas **não são, por si mesmas, um requisito do OpenSSF, NIST ou DORA**.
 
+> **Regra Fundamental de Evidência:**
+> **IMPLEMENTED != EXECUTED, EXECUTED != VERIFIED**
+> Nenhum agente deve assumir que algo funciona ou está em conformidade apenas porque o código foi escrito. A evidência observável e executável é o único critério aceito.
+
 Antes de alterar código ou documentação:
 
 1. Leia `policy/project-state.json`, `docs/MATURITY.md`, `docs/ARCHITECTURE.md` e `docs/TESTING.md`.
