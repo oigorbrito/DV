@@ -1,51 +1,51 @@
-# NDV Architecture Governance
+# Governança de arquitetura do DV
 
-## Default posture
+## Postura padrão
 
-No NDV architecture component is approved merely because it appears useful conceptually.
+Nenhum componente de arquitetura do DV é aprovado apenas por parecer útil conceitualmente.
 
-The default implementation order is:
+A ordem padrão de implementação é:
 
 `REUSE -> ADAPT -> WRAP -> FORK -> BUILD CUSTOM`
 
-A proposed custom capability must pass both:
+Uma capacidade customizada proposta deve passar pelos dois portões:
 
-1. scientific gate: the capability creates measurable value;
-2. engineering gate: existing software does not satisfy the required contract more economically.
+1. portão científico: a capacidade cria valor mensurável;
+2. portão de engenharia: o software existente não atende ao contrato exigido de forma mais econômica.
 
-## Blocked by default
+## Bloqueado por padrão
 
-Until evidence changes their status, do not implement:
+Até que a evidência altere esse status, não implementar:
 
-- NDV orchestrator
-- NDV generic agent framework
-- NDV memory system
-- NDV generic router
-- NDV workflow engine
-- NDV model/provider gateway
-- NDV sandbox/workspace platform
-- NDV architecture-search engine
-- learned/adaptive controller
+- orquestrador do DV
+- framework genérico de agentes do DV
+- sistema de memória do DV
+- roteador genérico do DV
+- motor de workflow do DV
+- gateway de modelos/provedores do DV
+- plataforma de sandbox/workspace do DV
+- motor de busca de arquitetura do DV
+- controlador aprendido/adaptativo
 
-## Candidate minimal NDV-specific artifacts
+## Artefatos mínimos específicos do DV candidatos
 
-These may be justified earlier because they encode the research itself rather than duplicate ecosystem infrastructure:
+Estes podem se justificar mais cedo porque codificam a própria pesquisa, em vez de duplicar infraestrutura do ecossistema:
 
-- Evidence Ledger schema
-- Execution Ledger schema
-- minimal `VerificationResult` contract
-- minimal `CapabilityProfile` contract
-- minimal decision-policy interface, only if P1/P4 require it
+- schema do Evidence Ledger
+- schema do Execution Ledger
+- contrato mínimo `VerificationResult`
+- contrato mínimo `CapabilityProfile`
+- interface mínima de política de decisão, somente se P1/P4 exigirem
 
-## Capability kill rules
+## Regras de eliminação de capacidades
 
-- If `workspace-only ~= structured-state`, reject a custom state/memory layer.
-- If an existing context method is equivalent or better, reuse it.
-- If `best-fixed ~= oracle`, reject a routing layer.
-- If `rules ~= learned/LLM controller`, reject controller sophistication.
-- If external orchestration is equivalent at lower total cost, do not build orchestration.
-- If prior art satisfies the contract, implementation may be killed before a custom prototype is written.
+- Se `workspace-only ~= structured-state`, rejeitar uma camada customizada de estado/memória.
+- Se um método de contexto existente é equivalente ou melhor, reutilizá-lo.
+- Se `best-fixed ~= oracle`, rejeitar uma camada de roteamento.
+- Se `rules ~= learned/LLM controller`, rejeitar a sofisticação do controlador.
+- Se uma orquestração externa é equivalente a menor custo total, não construir orquestração.
+- Se um trabalho anterior satisfaz o contrato, a implementação pode ser eliminada antes de um protótipo customizado ser escrito.
 
-## Architecture authority
+## Autoridade de arquitetura
 
-Architecture is an output of evidence, not a prerequisite of the research program. No normative "NDV architecture v1" should be frozen before integrated evidence justifies it.
+A arquitetura é um resultado da evidência, não um pré-requisito do programa de pesquisa. Nenhuma "arquitetura DV v1" normativa deve ser congelada antes que a evidência integrada a justifique.

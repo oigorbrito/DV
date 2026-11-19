@@ -1,45 +1,45 @@
-# NDV Experimental Governance
+# Governança experimental do DV
 
-## Purpose
+## Finalidade
 
-Experiments exist to falsify or constrain claims, not to justify a predetermined architecture.
+Experimentos existem para refutar ou restringir afirmações, não para justificar uma arquitetura predeterminada.
 
-## Core rules
+## Regras centrais
 
-- Freeze task, treatment, executor binding, shaping, budgets, verifier, repetition policy, and analysis plan before comparative execution.
-- Smoke tests validate instrumentation; they do not authorize scientific performance claims.
-- Holdout tasks must remain sealed until the protocol authorizes their use.
-- No treatment result may influence whether a task is admitted.
-- Failures and inconclusive runs retain all consumed resource cost.
-- Do not stop early because a favored treatment leads or loses.
-- Do not silently discard harness failures, provider failures, environment drift, or oracle defects; attribute them explicitly.
+- Congelar tarefa, tratamento, vínculo do executor, moldagem, orçamentos, verificador, política de repetição e plano de análise antes da execução comparativa.
+- Testes de fumaça validam a instrumentação; não autorizam afirmações científicas de desempenho.
+- Tarefas de holdout devem permanecer lacradas até que o protocolo autorize seu uso.
+- Nenhum resultado de tratamento pode influenciar se uma tarefa é admitida.
+- Falhas e execuções inconclusivas retêm todo o custo de recursos consumido.
+- Não interromper cedo porque um tratamento favorecido está na frente ou atrás.
+- Não descartar silenciosamente falhas de harness, falhas de provedor, desvio de ambiente ou defeitos de oráculo; atribuí-los explicitamente.
 - `UNMEASURED != ZERO`.
 
-## Pipeline qualification vs comparative evidence
+## Qualificação do pipeline vs. evidência comparativa
 
-NDV distinguishes:
+O DV distingue:
 
-- `PIPELINE_SMOKE_READY`: enough to validate materialization, invocation, candidate capture, verification, accounting, and result serialization.
-- `COMPARATIVE_READY`: enough qualified treatments and admitted tasks to support the intended scientific comparison.
+- `PIPELINE_SMOKE_READY`: suficiente para validar materialização, invocação, captura de candidatos, verificação, contabilidade e serialização de resultados.
+- `COMPARATIVE_READY`: suficiente para tratamentos qualificados e tarefas admitidas que sustentem a comparação científica pretendida.
 
-A pipeline smoke may pass even when no task is solved, provided the pipeline is reproducible and evidence-complete.
+Um teste de fumaça do pipeline pode passar mesmo quando nenhuma tarefa é resolvida, desde que o pipeline seja reproduzível e a evidência esteja completa.
 
-## Stop rules
+## Regras de parada
 
-- If `best fixed ~= oracle`, routing headroom is not established.
-- If coordination/control overhead is greater than or equal to savings, reject the added layer.
-- If existing prior art provides equivalent required capability at lower expected cost, prefer reuse.
-- If results are unstable under the frozen repetition policy, return `INCONCLUSIVE`.
-- Never tune until a preferred treatment wins.
+- Se `best fixed ~= oracle`, o potencial de roteamento não está estabelecido.
+- Se a sobrecarga de coordenação/controle for maior ou igual à economia, rejeitar a camada adicionada.
+- Se um trabalho anterior existente fornece a capacidade exigida a um custo esperado menor, preferir o reuso.
+- Se os resultados forem instáveis sob a política de repetição congelada, retornar `INCONCLUSIVE`.
+- Nunca ajustar até que um tratamento preferido vença.
 
-## Phase gates
+## Portões de fase
 
-- P1 studies executor/routing economics.
-- P2 opens only when continuity/recovery cost is materially relevant.
-- P3 opens only when composition heterogeneity has measurable headroom.
-- P4 opens only when sequential decisions matter and simpler policies leave measurable regret.
-- P5 integrates only capabilities that survived earlier gates.
+- P1 estuda a economia de executor e de roteamento.
+- P2 só se abre quando o custo de continuidade/recuperação é materialmente relevante.
+- P3 só se abre quando a heterogeneidade de composição tem potencial mensurável.
+- P4 só se abre quando decisões sequenciais importam e políticas mais simples deixam arrependimento mensurável.
+- P5 integra apenas as capacidades que sobreviveram aos portões anteriores.
 
-## Documentation discipline
+## Disciplina de documentação
 
-Create documentation when it controls a decision, experiment, provenance requirement, result, or gate. Avoid speculative documentation with no operational consequence.
+Crie documentação quando ela controlar uma decisão, experimento, requisito de proveniência, resultado ou portão. Evite documentação especulativa sem consequência operacional.
