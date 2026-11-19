@@ -1,0 +1,26 @@
+name: repository-harness
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Run repository harness
+        run: python scripts/harness.py
+      - name: Run harness tests
+        run: python -m unittest discover -s tests -v
+      - name: Run DV tooling tests
+        # Same convention as the wp03-wp07 workflows: run from tools/ because
+        # several cases use relative paths (../experiments/...).
+        working-directory: tools
+        run: python -m unittest discover -p "test_*.py" -v
