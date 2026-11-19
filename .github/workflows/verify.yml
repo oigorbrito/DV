@@ -22,8 +22,5 @@ jobs:
       - name: Run DV tooling tests
         # Same convention as the wp03-wp07 workflows: run from tools/ because
         # several cases use relative paths (../experiments/...).
-        # Pre-existing failures inherited from b6862f1 (4 cases in wp07/codex tests).
-        # Non-blocking so the PR is not gated by them; the signal stays visible in the log.
-        continue-on-error: true
         working-directory: tools
         run: python -m unittest discover -p "test_*.py" -v
