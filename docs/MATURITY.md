@@ -20,7 +20,7 @@ O harness não inventa um limite numérico para “grande número de usuários�
 
 O harness reconhece estes gatilhos observáveis:
 
-1. **Primeiro release observado** — `release.made=true` no arquivo de estado ou pelo menos uma tag Git presente.
+1. **Primeiro release observado** — `release.made=true` no arquivo de estado ou pelo menos uma tag de release (padrão `vX.Y.Z`). Tags de marco histórico não contam como release.
 2. **Contagem de mantenedores alterada** — usada para solicitar reavaliação, não para promoção automática.
 3. **Nível-alvo OSPS alterado** — ativa os controles correspondentes verificáveis localmente.
 4. **Implementação do projeto presente** — os testes específicos do projeto não devem mais permanecer vazios.

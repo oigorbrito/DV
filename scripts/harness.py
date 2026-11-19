@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -68,12 +69,22 @@ def git_tags(root: Path = ROOT) -> list[str]:
     return [line.strip() for line in cp.stdout.splitlines() if line.strip()]
 
 
+RELEASE_TAG_RE = re.compile(r"^v?\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$")
+
+
 def has_release(state: dict, root: Path = ROOT) -> tuple[bool, str]:
+    """A release is declared in the state file or marked by a version tag (vX.Y.Z).
+
+    Other Git tags (for example historical cutover markers) are reported but do not count as a release.
+    """
     if state["release"].get("made") is True:
         return True, "policy/project-state.json declares a release"
     tags = git_tags(root)
+    release_tags = [t for t in tags if RELEASE_TAG_RE.match(t)]
+    if release_tags:
+        return True, f"Release tags observed: {', '.join(release_tags[:3])}"
     if tags:
-        return True, f"Git tags observed: {', '.join(tags[:3])}"
+        return False, f"non-release Git tags observed (historical markers, not a release): {', '.join(tags[:3])}"
     return False, "no declared release and no Git tags observed"
 
 

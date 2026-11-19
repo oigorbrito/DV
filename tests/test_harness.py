@@ -23,6 +23,18 @@ class HarnessTests(unittest.TestCase):
         fs = h.findings(s, ROOT)
         self.assertTrue(any(x.control == "PRODUCT-STAGE" and x.status == h.INFO for x in fs))
 
+    def test_historical_marker_tag_is_not_a_release(self):
+        from unittest import mock
+        with mock.patch.object(h, "git_tags", return_value=["legacy-dv-cutover-66f3a21"]):
+            released, _ = h.has_release(self.base_state(), ROOT)
+        self.assertFalse(released)
+
+    def test_version_tag_is_a_release(self):
+        from unittest import mock
+        with mock.patch.object(h, "git_tags", return_value=["legacy-dv-cutover-66f3a21", "v1.0.0"]):
+            released, _ = h.has_release(self.base_state(), ROOT)
+        self.assertTrue(released)
+
     def test_release_activates_release_conditioned_checks(self):
         s = self.base_state()
         s["release"]["made"] = True
