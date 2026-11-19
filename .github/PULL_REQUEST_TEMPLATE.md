@@ -1,17 +1,17 @@
-## Scope
+## Escopo
 
-Describe the smallest intended change.
+Descreva a menor mudança pretendida.
 
-## Evidence executed
+## Evidência executada
 
-List commands/checks actually executed on this head. Do not list planned or historical checks as PASS.
+Liste os comandos/verificações realmente executados neste head. Não liste verificações planejadas ou históricas como PASS.
 
-## Maturity impact
+## Impacto na maturidade
 
-- [ ] No maturity/release trigger changed.
-- [ ] First release or release behavior changed; `python scripts/harness.py` was rerun.
-- [ ] Maintainer/user/maturity facts changed; reassessment is documented.
+- [ ] Nenhum gatilho de maturidade/release foi alterado.
+- [ ] Primeiro release ou comportamento de release alterado; `python scripts/harness.py` foi executado novamente.
+- [ ] Fatos de mantenedor/usuário/maturidade mudaram; a reavaliação está documentada.
 
-## Result
+## Resultado
 
-State unresolved evidence as `GAP` or `UNKNOWN_EXTERNAL`, not PASS.
+Informe a evidência não resolvida como `GAP` ou `UNKNOWN_EXTERNAL`, não como PASS.
