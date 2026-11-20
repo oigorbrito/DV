@@ -99,12 +99,19 @@ class AuthCredentials:
 
 
 class FileLock:
-    """Bloqueio de arquivo atômico com retry no Windows contra EPERM / ELOCKED."""
+    """Bloqueio de arquivo atômico com stale-recovery e retry no Windows contra EPERM / ELOCKED."""
 
-    def __init__(self, lock_path: Path, timeout_s: float = 30.0, retry_delay_s: float = 0.05) -> None:
+    def __init__(
+        self,
+        lock_path: Path,
+        timeout_s: float = 30.0,
+        retry_delay_s: float = 0.05,
+        stale_s: float = 30.0,
+    ) -> None:
         self.lock_path = lock_path
         self.timeout_s = timeout_s
         self.retry_delay_s = retry_delay_s
+        self.stale_s = stale_s
         self._fd: int | None = None
 
     def acquire(self) -> None:
@@ -112,10 +119,23 @@ class FileLock:
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
         while True:
             try:
-                # O_CREAT | O_EXCL garante atomicidade interprocessos sem dependência externa
-                self._fd = os.open(str(self.lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
+                flags = os.O_CREAT | os.O_EXCL | os.O_RDWR
+                if hasattr(os, "O_BINARY"):
+                    flags |= os.O_BINARY
+                self._fd = os.open(str(self.lock_path), flags, 0o600)
+                with contextlib.suppress(OSError):
+                    os.write(self._fd, str(time.time()).encode("ascii"))
                 return
             except (FileExistsError, PermissionError):
+                # Stale lock recovery (espelhando staleMs de proper-lockfile do pi)
+                try:
+                    mtime = self.lock_path.stat().st_mtime
+                    if time.time() - mtime > self.stale_s:
+                        with contextlib.suppress(OSError):
+                            self.lock_path.unlink()
+                except OSError:
+                    pass
+
                 if time.time() >= deadline:
                     raise TimeoutError(f"Timeout aguardando lock: {self.lock_path}") from None
                 time.sleep(self.retry_delay_s)
@@ -183,9 +203,13 @@ class AuthStorage:
             elif provider_id in current_all:
                 del current_all[provider_id]
 
-            # Escrita atômica em arquivo temporário com perms 0o600
+            # Escrita atômica em arquivo temporário com perms 0o600 diretas em os.open
             temp_file = self.auth_path.with_suffix(".tmp")
-            with open(temp_file, "w", encoding="utf-8") as f:
+            flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+            if hasattr(os, "O_BINARY"):
+                flags |= os.O_BINARY
+            fd = os.open(str(temp_file), flags, 0o600)
+            with open(fd, "w", encoding="utf-8") as f:
                 json.dump(current_all, f, indent=2, ensure_ascii=False)
             with contextlib.suppress(OSError):
                 temp_file.chmod(0o600)
@@ -275,6 +299,10 @@ class OAuthCallbackServer(http.server.HTTPServer):
         self.event_done = threading.Event()
 
 
+class NonInteractiveAuthError(RuntimeError):
+    """Erro quando autenticação interativa é exigida em ambiente não interativo (sem TTY)."""
+
+
 def wait_for_oauth_code(
     server: OAuthCallbackServer,
     prompt_message: str,
@@ -284,34 +312,50 @@ def wait_for_oauth_code(
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
+    is_interactive = (
+        sys.stdin is not None
+        and hasattr(sys.stdin, "isatty")
+        and sys.stdin.isatty()
+    )
+
     print(f"\n{prompt_message}")
-    print("Caso o navegador nao redirecione automaticamente, cole a URL de redirecionamento ou o codigo aqui:")
-
     manual_code: list[str | None] = [None]
+    input_thread: threading.Thread | None = None
 
-    def _read_stdin() -> None:
-        try:
-            line = sys.stdin.readline()
-            if line:
-                val = line.strip()
-                if "code=" in val:
-                    qs = urllib.parse.parse_qs(urllib.parse.urlparse(val).query)
-                    val = qs.get("code", [val])[0]
-                elif "#" in val:
-                    val = val.split("#", 1)[0]
-                manual_code[0] = val
-                server.event_done.set()
-        except Exception:
-            pass
+    if is_interactive:
+        print("Caso o navegador nao redirecione automaticamente, cole a URL de redirecionamento ou o codigo aqui:")
 
-    input_thread = threading.Thread(target=_read_stdin, daemon=True)
-    input_thread.start()
+        def _read_stdin() -> None:
+            try:
+                line = sys.stdin.readline()
+                if line:
+                    val = line.strip()
+                    if "code=" in val:
+                        qs = urllib.parse.parse_qs(urllib.parse.urlparse(val).query)
+                        val = qs.get("code", [val])[0]
+                    elif "#" in val:
+                        val = val.split("#", 1)[0]
+                    manual_code[0] = val
+                    server.event_done.set()
+            except Exception:
+                pass
+
+        input_thread = threading.Thread(target=_read_stdin, daemon=True)
+        input_thread.start()
+    else:
+        print("[AUTH] Ambiente nao interativo detectado (sem TTY em stdin). Entrada manual desativada; aguardando callback do navegador.")
 
     completed = server.event_done.wait(timeout=timeout_s)
     server.shutdown()
     server.server_close()
 
     if not completed:
+        if not is_interactive:
+            raise NonInteractiveAuthError(
+                "Timeout aguardando callback OAuth em ambiente nao interativo (sem TTY). "
+                "Execute 'python -m dv_harness.auth login' em um terminal interativo ou "
+                "configure uma sessao previa via LocalCLISessionAuthProvider."
+            )
         raise TimeoutError("Tempo esgotado aguardando autenticacao via navegador ou terminal.")
     if server.error_message:
         raise RuntimeError(f"Erro no callback OAuth: {server.error_message}")

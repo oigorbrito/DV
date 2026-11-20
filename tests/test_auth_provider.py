@@ -358,3 +358,72 @@ def test_llm_client_sanitizes_tokens_in_errors_and_ledger():
     for att in exc_info.value.attempts:
         assert "sk-ant-oat01-leakMe" not in (att.error_message or "")
         assert "[REDACTED_AUTH_TOKEN]" in (att.error_message or "")
+
+
+# ---------------------------------------------------------------------------
+# Testes de Evolução: Stale Lock, TTY / CI e CLI
+# ---------------------------------------------------------------------------
+
+
+def test_file_lock_recovers_from_stale_lock(tmp_path: Path):
+    lock_file = tmp_path / "test.lock"
+    # Cria lock antigo abandonado por processo anterior
+    lock_file.write_text("old_timestamp")
+    # Força mtime para 100 segundos no passado
+    old_time = time.time() - 100
+    import os
+    os.utime(lock_file, (old_time, old_time))
+
+    # Tenta adquirir com stale_s=10.0 (deve limpar o lock antigo e prosseguir)
+    lock = FileLock(lock_file, timeout_s=1.0, stale_s=10.0)
+    with lock:
+        assert lock_file.exists()
+    assert not lock_file.exists()
+
+
+def test_wait_for_oauth_code_non_interactive_raises_specific_error(monkeypatch):
+    from dv_harness.auth_provider import NonInteractiveAuthError, wait_for_oauth_code
+
+    server = OAuthCallbackServer("127.0.0.1", 0, ANTHROPIC_CALLBACK_PATH, "state123")
+
+    # Simula sys.stdin sem tty (CI / daemon)
+    class FakeNonTTYStdin:
+        def isatty(self):
+            return False
+
+    monkeypatch.setattr("sys.stdin", FakeNonTTYStdin())
+
+    # Timeout curto para testar a falha rápida
+    with pytest.raises(NonInteractiveAuthError) as exc_info:
+        wait_for_oauth_code(server, prompt_message="Test prompt", timeout_s=0.2)
+    assert "Ambiente nao interativo" in str(exc_info.value) or "sem TTY" in str(exc_info.value)
+
+
+def test_auth_cli_status_and_logout(tmp_path: Path, monkeypatch, capsys):
+    from dv_harness import auth
+
+    test_auth_file = tmp_path / "auth.json"
+    storage = AuthStorage(test_auth_file)
+    cred = {
+        "type": "oauth",
+        "access": "sk-ant-oat01-testaccess123456",
+        "refresh": "sk-ant-ort01-testrefresh123456",
+        "expires": int((time.time() + 1800) * 1000),
+    }
+    storage.modify("anthropic", lambda _: cred)
+
+    monkeypatch.setattr("dv_harness.auth.DEFAULT_AUTH_FILE", test_auth_file)
+
+    # Executa status
+    ret = auth.main(["status"])
+    assert ret == 0
+    captured = capsys.readouterr().out
+    assert "anthropic" in captured
+    assert "sk-ant-oat01" not in captured  # Mascarado!
+    assert "ATIVO" in captured
+
+    # Executa logout
+    ret = auth.main(["logout", "--provider", "anthropic"])
+    assert ret == 0
+    assert storage.get_credential("anthropic") is None
+
