@@ -166,7 +166,8 @@ class AgentResult:
     error: str | None = None
     provider_calls_failed: int = 0
     provider_attempts: int = 0
-    provider_attempts_failed: int = 0
+    failed_attempt_count: int = 0
+    tokens_lower_bound: int | None = None
     total_cached_input_tokens: int | None = None
     total_reasoning_tokens: int | None = None
     total_wall_clock_ms: float | None = None
@@ -473,7 +474,8 @@ class AgentLoop:
             error=error,
             provider_calls_failed=sum(1 for c in calls if c.outcome == "provider_error"),
             provider_attempts=sum(len(c.attempts) for c in calls),
-            provider_attempts_failed=_failed_attempts(calls),
+            failed_attempt_count=_failed_attempts(calls),
+            tokens_lower_bound=_lower_bound(calls),
             total_cached_input_tokens=_total(calls, lambda c: c.cached_input_tokens),
             total_reasoning_tokens=_total(calls, lambda c: c.reasoning_tokens),
             total_wall_clock_ms=total_ms,
@@ -520,12 +522,25 @@ def _unmeasured_for(calls: list[CallRecord], total_tokens: int | None, run_id: s
     ):
         if value is None:
             unmeasured[key] = incomplete if calls else empty
+    if _lower_bound(calls) is None:
+        unmeasured["tokens_lower_bound"] = "no call returned usage; no lower bound can be stated"
     failed = _failed_attempts(calls)
     if failed:
         unmeasured["failed_attempt_usage"] = (
             f"{failed} failed attempt(s) returned no usage; their tokens and cost are not measured"
         )
     return unmeasured
+
+
+def _lower_bound(calls: list[CallRecord]) -> int | None:
+    """Cota inferior de tokens: soma do uso já medido em cada chamada, mesmo quando o total é ``None``.
+
+    Uma chamada com tentativa falha continua contribuindo com o uso que o provedor devolveu para a
+    tentativa bem-sucedida. A tentativa que falhou não tem uso conhecido e não entra. Sem nenhum uso
+    medido, o resultado é ``None``, nunca 0, porque 0 significaria "medido e zero".
+    """
+    known = [c.total_tokens for c in calls if c.total_tokens is not None]
+    return sum(known) if known else None
 
 
 def _steps(calls: list[CallRecord]) -> int:

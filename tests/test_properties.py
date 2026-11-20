@@ -293,3 +293,42 @@ def test_I6_absent_values_are_none_with_reason(prompt, completion, cost):
         assert result.cost_basis == "unknown"
     else:
         assert result.total_cost_usd == cost
+
+
+# --- I1b: cota inferior de tokens e contagem de tentativas falhas --------------------------
+
+
+@PROP
+@given(
+    steps=st.lists(
+        st.tuples(_usage, _usage, st.integers(min_value=0, max_value=3)),
+        min_size=1, max_size=5,
+    ),
+    fail_after=st.one_of(st.none(), st.integers(min_value=0, max_value=5)),
+)
+def test_I1b_lower_bound_and_failed_attempts_match_independent_recount(steps, fail_after):
+    script = []
+    for prompt, completion, n_err in steps:
+        attempts = _error_attempts(n_err) + (AttemptRecord(index=n_err + 1, outcome="ok", wall_clock_ms=1.0),)
+        script.append(make_response(calls=[call(f"c{len(script)}", "run_bash", {"command": "echo x"})],
+                                    prompt=prompt, completion=completion, cost=0.0, attempts=attempts))
+    if fail_after is not None and fail_after < len(script):
+        script.insert(fail_after, provider_failure("boom", attempts=2))
+    else:
+        script.append(make_response(calls=[submit("end", "done")]))
+    with tempfile.TemporaryDirectory() as tmp:
+        result = AgentLoop(ScriptedLLM(script), ToolExecutor(Path(tmp)), ContextManager(10)).run(
+            "t", "s", max_steps=50)
+
+    # Recontagem independente a partir das chamadas registradas
+    known = [c.total_tokens for c in result.calls if c.total_tokens is not None]
+    expected_bound = sum(known) if known else None
+    assert result.tokens_lower_bound == expected_bound
+    # Cota inferior nunca passa do total medido quando ele existe
+    if result.total_tokens is not None:
+        assert result.tokens_lower_bound == result.total_tokens
+    # Tentativas falhas: recontagem direta das tentativas
+    assert result.failed_attempt_count == sum(1 for c in result.calls for a in c.attempts if a.outcome == "error")
+    # Quando há tentativa falha sem uso, o total não pode ser medido
+    if result.failed_attempt_count or result.provider_calls_failed:
+        assert result.total_tokens is None

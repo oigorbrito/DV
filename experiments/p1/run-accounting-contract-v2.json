@@ -63,7 +63,12 @@
 
   "unmeasured_rule": "a null field must have an entry in AgentResult.unmeasured with the reason. Sentinels 0, 0.0 and \"\" are forbidden for unmeasured values (invariant I6).",
 
-  "usage_rule": "usage is the provider-reported usage. Missing usage is null, never 0. A call with any failed attempt has unknown usage for that attempt; totals that include it are null (D5). Lower bounds of known values are used for budget decisions.",
+  "usage_rule": "usage is the provider-reported usage. Missing usage is null, never 0. A call with any failed attempt has unknown usage for that attempt; total_tokens (and the other totals) are null when any call is incomplete (D5, I6). Budget decisions use the same lower bound.",
+  "lower_bound_rule": {
+    "tokens_lower_bound": "sum of total_tokens over calls whose usage was measured, including calls whose other attempts failed. It is a true lower bound of the tokens consumed. Null when no call returned usage (never 0). Reported even when total_tokens is null.",
+    "failed_attempt_count": "number of attempts that failed (provider errors inside retries). Measured count; 0 means none failed.",
+    "why": "a run recovered from a 429 keeps a usable lower bound instead of being discarded blindly; total_tokens stays null to avoid reporting an incomplete total as a measurement."
+  },
 
   "cost_basis": {
     "values": ["priced_by_table", "priced_zero_by_table", "unknown"],
@@ -109,7 +114,7 @@
     "policy": "exponential backoff base_delay_s * multiplier^(n-1), capped at max_delay_s, no jitter (reproducibility)",
     "defaults": {"max_attempts": 5, "base_delay_s": 1.0, "multiplier": 2.0, "max_delay_s": 60.0},
     "abort_on": ["UnsupportedParamsError", "NotFoundError", "PermissionDeniedError", "ContextWindowExceededError", "AuthenticationError"],
-    "accounting": "every attempt is recorded in CallRecord.attempts, including failed ones, with wall_clock_ms and error. provider_attempts and provider_attempts_failed are reported at run level."
+    "accounting": "every attempt is recorded in CallRecord.attempts, including failed ones, with wall_clock_ms and error. provider_attempts (all attempts) and failed_attempt_count (failed ones) are reported at run level."
   },
 
   "audit_rule": "each tool call stores raw_output (complete, untruncated) and raw_sha256 in ToolEvent. The model receives the truncated observation. The ledger stores raw_output.",

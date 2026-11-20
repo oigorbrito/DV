@@ -159,6 +159,19 @@ MUTANTS: tuple[Mutant, ...] = (
            "    if status in (STATUS_UNVERIFIABLE, STATUS_PROVIDER_ERROR):",
            "    if status in (STATUS_PROVIDER_ERROR,):",
            "budget_unverifiable not fixed to INCONCLUSIVE (D2)", T_PROTO),
+    # --- cota inferior de tokens e tentativas falhas (Decisão 1 refinada) ----------
+    Mutant("M28", f"{SRC}/agent_loop.py",
+           "            tokens_lower_bound=_lower_bound(calls),",
+           "            tokens_lower_bound=_total(calls, lambda c: c.total_tokens),",
+           "lower bound replaced by the complete total (None on any failure)", T_LOOP),
+    Mutant("M29", f"{SRC}/agent_loop.py",
+           "            failed_attempt_count=_failed_attempts(calls),",
+           "            failed_attempt_count=sum(1 for c in calls if c.outcome == \"provider_error\"),",
+           "failed attempt count ignores retried failures", T_LOOP),
+    Mutant("M30", f"{SRC}/agent_loop.py",
+           "    known = [c.total_tokens for c in calls if c.total_tokens is not None]\n    return sum(known) if known else None",
+           "    known = [c.total_tokens for c in calls if c.total_tokens is not None and c.attempt_usage_complete]\n    return sum(known) if known else None",
+           "lower bound drops calls that recovered from a retry", T_LOOP),
 )
 
 

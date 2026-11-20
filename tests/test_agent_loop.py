@@ -224,7 +224,7 @@ def test_provider_error_keeps_totals_attempts_and_messages(tmp_path):
     assert result.steps == 1
     assert result.provider_calls_failed == 1
     assert result.provider_attempts == 1 + 3
-    assert result.provider_attempts_failed == 3
+    assert result.failed_attempt_count == 3
     failed = result.calls[1]
     assert failed.outcome == "provider_error"
     assert len(failed.attempts) == 3
@@ -257,7 +257,7 @@ def test_retried_success_marks_usage_incomplete(tmp_path):
     result = make_loop(tmp_path, llm).run("t", "s")
     assert result.status == p.STATUS_COMPLETED
     assert result.provider_attempts == 2
-    assert result.provider_attempts_failed == 1
+    assert result.failed_attempt_count == 1
     assert result.total_tokens is None  # tentativa com erro não tem uso conhecido (D5)
     assert "failed_attempt_usage" in result.unmeasured
 
@@ -451,3 +451,45 @@ def test_total_of_no_calls_is_none_not_zero():
     # Guarda defensiva: sum([]) seria o sentinela 0, proibido pelo I6.
     from dv_harness.agent_loop import _total
     assert _total([], lambda c: c.total_tokens) is None
+
+
+# --- Decisão 1 refinada: tokens_lower_bound e failed_attempt_count ----------------------
+
+
+def test_recovered_429_keeps_a_usable_lower_bound(tmp_path):
+    attempts = (
+        AttemptRecord(index=1, outcome="error", wall_clock_ms=3.0, error_type="RateLimitError", retryable=True, backoff_s=1.0),
+        AttemptRecord(index=2, outcome="ok", wall_clock_ms=2.0),
+    )
+    llm = ScriptedLLM([make_response(calls=[submit("s", "ok")], prompt=6, completion=4, cost=0.1, attempts=attempts)])
+    result = make_loop(tmp_path, llm).run("t", "s")
+    assert result.status == p.STATUS_COMPLETED
+    assert result.total_tokens is None          # D5: não é total medido
+    assert result.tokens_lower_bound == 10      # mas o uso medido é conhecido e vale como cota inferior
+    assert result.failed_attempt_count == 1
+    assert result.unmeasured.get("total_tokens")
+
+
+def test_provider_error_lower_bound_is_prior_measured_usage(tmp_path):
+    llm = ScriptedLLM([
+        make_response(calls=[call("b", "run_bash", {"command": "echo x"})], prompt=30, completion=20, cost=0.2),
+        provider_failure("down", attempts=2),
+    ])
+    result = make_loop(tmp_path, llm).run("t", "s")
+    assert result.total_tokens is None
+    assert result.tokens_lower_bound == 50
+    assert result.failed_attempt_count == 2
+
+
+def test_lower_bound_is_none_when_nothing_was_measured_never_zero(tmp_path):
+    result = make_loop(tmp_path, ScriptedLLM([provider_failure("down")])).run("t", "s")
+    assert result.tokens_lower_bound is None
+    assert "tokens_lower_bound" in result.unmeasured
+
+
+def test_lower_bound_equals_total_when_complete(tmp_path):
+    llm = ScriptedLLM([make_response(calls=[submit("s", "x")], prompt=3, completion=4)])
+    result = make_loop(tmp_path, llm).run("t", "s")
+    assert result.total_tokens == 7
+    assert result.tokens_lower_bound == 7
+    assert result.failed_attempt_count == 0
