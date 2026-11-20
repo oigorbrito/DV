@@ -1,11 +1,11 @@
 """Lote multi-tarefa com modelo real (contrato p1-run-accounting-v3). Ver ``src/dv_harness/batch.py``.
 
 Padrões idênticos aos do ``dv_smoke_run.py``: ``--model claude-haiku-5-5``, ``--api-key-env ANTHROPIC_API_KEY``.
-Use ``--model gemini/gemini-3.1-flash-lite --api-key-env GEMINI_API_KEY`` para Gemini.
+Para Gemini: ``--model gemini/gemini-3.1-flash-lite --api-key-env GEMINI_API_KEY``.
 
 Uso (fora do repositório, em diretório limpo):
     python scripts/dv_batch_run.py --outdir <dir-limpo> --suite screening-n10
-    python scripts/dv_batch_run.py --outdir <dir-limpo> --manifest <arquivo.json> --limit 3
+    python scripts/dv_batch_run.py --outdir <dir-limpo> --manifest <arquivo.json> --limit 3 --fail-fast
 
 Gate (exit 2, nada executado): nome de variável inválido, variável ausente ou vazia (o valor nunca é
 impresso), ``--request-timeout-s`` / ``--max-steps`` / ``--max-cost-usd`` / ``--limit`` fora do intervalo,
@@ -32,7 +32,7 @@ MODEL = "claude-haiku-5-5"  # padrão igual ao do dv_smoke_run.py; --model troca
 KEY_VAR = "ANTHROPIC_API_KEY"  # padrão; --api-key-env troca
 REQUEST_TIMEOUT_S = 30.0  # 3 tentativas x 30s + backoff 2s + 4s = 96s por chamada travada
 MAX_STEPS = 8
-MAX_COST_USD = 0.10
+MAX_COST_USD = 0.50  # teto do LOTE (não por tarefa): cada tarefa recebe o que sobrou
 KEY_NAME_RE = re.compile(r"[A-Z_][A-Z0-9_]*")
 
 
@@ -56,11 +56,13 @@ def _param_error(args: argparse.Namespace) -> str | None:
 def _load_tasks(args: argparse.Namespace, batch: Any) -> tuple[str, list[Any], str]:
     if args.manifest is not None:
         suite_id, tasks, manifest_sha = batch.load_manifest(args.manifest)
+        label = f"manifest:{args.manifest.name}"
     else:
         suite_id = args.suite or batch.SUITE_SCREENING_N10
         tasks = batch.builtin_suite(suite_id)
         manifest_sha = batch.suite_sha256(tasks)
-    return suite_id, batch.select(tasks, args.limit), manifest_sha
+        label = suite_id
+    return label, batch.select(tasks, args.limit), manifest_sha
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -75,13 +77,14 @@ def _parser() -> argparse.ArgumentParser:
                         help=f"nome da variável com a chave; padrão: {KEY_VAR}")
     parser.add_argument("--request-timeout-s", type=float, default=REQUEST_TIMEOUT_S, metavar="S",
                         help=f"timeout por requisição HTTP; padrão: {REQUEST_TIMEOUT_S}")
-    parser.add_argument("--max-steps", type=int, default=MAX_STEPS, help=f"padrão: {MAX_STEPS}")
+    parser.add_argument("--max-steps", type=int, default=MAX_STEPS, help=f"por tarefa; padrão: {MAX_STEPS}")
     parser.add_argument("--max-cost-usd", type=float, default=MAX_COST_USD,
-                        help=f"teto de custo por tarefa; padrão: {MAX_COST_USD}")
-    parser.add_argument("--continue-on-error", action=argparse.BooleanOptionalAction, default=True,
-                        help="padrão ativo: provider_error, FAIL ou erro de harness não interrompem o lote. "
-                             "Com --no-continue-on-error, o lote para no primeiro outcome diferente de SOLVED")
+                        help=f"teto de custo do LOTE (limite inferior conhecido); padrão: {MAX_COST_USD}")
+    parser.add_argument("--fail-fast", action="store_true",
+                        help="para o lote no primeiro outcome diferente de SOLVED (padrão: segue, sem abortar)")
     parser.add_argument("--limit", type=int, default=None, metavar="N", help="executa só as N primeiras tarefas")
+    parser.add_argument("--candidate-id", default=None, metavar="ID",
+                        help="id do candidato no registro de triagem (opcional, somente leitura)")
     parser.add_argument("--git-head", default=None, metavar="SHA",
                         help="HEAD do repositório a registrar (padrão: git rev-parse HEAD, se disponível)")
     return parser
@@ -98,7 +101,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"blocked: {error}. Nothing was run.")
         return 2
     try:
-        suite_id, tasks, manifest_sha = _load_tasks(args, batch)
+        label, tasks, manifest_sha = _load_tasks(args, batch)
     except (batch.ManifestError, ValueError, OSError) as exc:
         print(f"blocked: {exc}. Nothing was run.")
         return 2
@@ -112,11 +115,12 @@ def main(argv: list[str] | None = None) -> int:
         request_timeout_s=args.request_timeout_s,
         max_steps=args.max_steps,
         max_cost_usd=args.max_cost_usd,
-        continue_on_error=args.continue_on_error,
-        suite_id=suite_id,
+        fail_fast=args.fail_fast,
+        suite_or_manifest=label,
         manifest_sha256=manifest_sha,
         git_head=args.git_head or batch.resolve_git_head(REPO),
         api_key_env=args.api_key_env,
+        candidate_id=args.candidate_id,
     )
 
     def make_llm(_task: batch.BatchTask) -> LLMClient:
@@ -128,9 +132,10 @@ def main(argv: list[str] | None = None) -> int:
 
     leak = (not summary["leak_scan"]["clean"]) or any(not r["leak_clean"] for r in summary["runs"])
     print(json.dumps({k: summary[k] for k in (
-        "N", "executed", "aborted", "outcome_counts", "verifier_verdict_counts", "pass_rate", "solved_rate",
-        "false_finish_rate", "total_tokens", "tokens_lower_bound", "total_cost_usd", "cost_basis",
-        "total_wall_clock_ms")}, indent=2, ensure_ascii=False))
+        "total_tasks", "executed", "aborted", "outcome_counts", "verifier_verdict_counts", "family_outcome_counts",
+        "pass_rate", "solved_rate", "false_finish_rate", "total_tokens", "tokens_lower_bound", "total_cost_usd",
+        "cost_basis", "total_wall_clock_ms")}, indent=2, ensure_ascii=False))
+    print(f"S0: {summary['s0_qualification']['status']} (treatment_eligible={summary['s0_qualification']['treatment_eligible']})")
     print(f"secret leak scan (all batch files): {'LEAK' if leak else 'clean'}")
     print(f"summary: {args.outdir / 'batch-summary.json'}")
     if leak:
