@@ -53,7 +53,8 @@ from litellm.exceptions import (
     UnsupportedParamsError,
 )
 
-from dv_harness.protocol import cost_basis_for
+from dv_harness.auth_provider import AuthCredentials, AuthProvider, sanitize_auth_secrets
+from dv_harness.protocol import COST_BASIS_SUBSCRIPTION, cost_basis_for
 
 Message = Mapping[str, Any]
 Tool = Mapping[str, Any]
@@ -134,7 +135,7 @@ class LLMCallFailed(Exception):
         self.attempts = attempts
         self.cause = cause
         self.wall_clock_ms = wall_clock_ms
-        super().__init__(f"{type(cause).__name__}: {_truncate(str(cause))}")
+        super().__init__(f"{type(cause).__name__}: {_truncate(sanitize_auth_secrets(str(cause)))}")
 
 
 @dataclass(frozen=True)
@@ -188,6 +189,7 @@ class LLMClient:
         self,
         default_model: str | None = None,
         *,
+        auth_provider: AuthProvider | None = None,
         completion_fn: CompletionFn | None = None,
         cost_fn: CostFn | None = None,
         retry: RetryPolicy | None = None,
@@ -195,6 +197,7 @@ class LLMClient:
         **default_params: Any,
     ) -> None:
         self.default_model = default_model
+        self.auth_provider = auth_provider
         self._completion = completion_fn or litellm.completion
         self._cost = cost_fn or litellm.completion_cost
         self.retry = retry or RetryPolicy()
@@ -223,6 +226,16 @@ class LLMClient:
         if tools:
             kwargs["tools"] = list(tools)
 
+        auth_creds: AuthCredentials | None = None
+        if self.auth_provider:
+            auth_creds = self.auth_provider.resolve_auth(effective_model)
+            if auth_creds.headers:
+                current_headers = dict(kwargs.get("extra_headers") or {})
+                current_headers.update(auth_creds.headers)
+                kwargs["extra_headers"] = current_headers
+            if auth_creds.api_key:
+                kwargs["api_key"] = auth_creds.api_key
+
         attempts: list[AttemptRecord] = []
         call_started = time.perf_counter()
         raw: Any = None
@@ -242,7 +255,7 @@ class LLMClient:
                     outcome="error",
                     wall_clock_ms=elapsed,
                     error_type=type(exc).__name__,
-                    error_message=_truncate(str(exc)),
+                    error_message=_truncate(sanitize_auth_secrets(str(exc))),
                     retryable=retryable,
                     backoff_s=backoff,
                 ))
@@ -271,7 +284,16 @@ class LLMClient:
         total_tokens = (
             None if prompt_tokens is None or completion_tokens is None else prompt_tokens + completion_tokens
         )
-        cost = self._cost_or_none(raw, effective_model)
+
+        is_sub = (auth_creds.cost_basis == COST_BASIS_SUBSCRIPTION) if auth_creds else False
+        if is_sub:
+            cost = None
+            cost_basis = COST_BASIS_SUBSCRIPTION
+            pricing_source = auth_creds.pricing_source if auth_creds else "subscription_session"
+        else:
+            cost = self._cost_or_none(raw, effective_model)
+            cost_basis = cost_basis_for(cost)
+            pricing_source = PRICING_SOURCE if cost is not None else None
 
         return LLMResponse(
             content=getattr(message, "content", None),
@@ -282,13 +304,13 @@ class LLMClient:
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
             cost_usd=cost,
-            cost_basis=cost_basis_for(cost),
+            cost_basis=cost_basis,
             provider=_provider_of(raw),
             api_id=_str_or_none(getattr(raw, "id", None)),
             wall_clock_ms=wall_clock_ms,
             cached_input_tokens=_detail(usage, "prompt_tokens_details", "cached_tokens"),
             reasoning_tokens=_detail(usage, "completion_tokens_details", "reasoning_tokens"),
-            pricing_source=PRICING_SOURCE if cost is not None else None,
+            pricing_source=pricing_source,
             attempts=tuple(attempts),
         )
 

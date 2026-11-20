@@ -71,11 +71,12 @@
   },
 
   "cost_basis": {
-    "values": ["priced_by_table", "priced_zero_by_table", "unknown"],
+    "values": ["priced_by_table", "priced_zero_by_table", "unknown", "subscription_session"],
     "priced_by_table": "cost > 0 from the litellm price table, estimate from provider usage",
     "priced_zero_by_table": "cost exactly 0.0 from the price table (e.g. ollama/* entries). This is a table fact, not a measured zero cost and not free-of-charge evidence.",
     "unknown": "no price entry; cost_usd is null",
-    "run_rule": "unknown if any call is unknown or has unknown usage; priced_zero_by_table if all calls are zero; otherwise priced_by_table, with zero_priced_calls reported separately"
+    "subscription_session": "account or flat-rate subscription session (e.g. Anthropic Claude Pro/Max, OpenAI Codex via OAuth); cost_usd is null, all token counts and wall clock latency are fully measured",
+    "run_rule": "unknown if any call is unknown or has unknown usage; subscription_session if all calls are subscription_session; priced_zero_by_table if all calls are zero; otherwise priced_by_table, with zero_priced_calls reported separately"
   },
 
   "remote_required": {

@@ -46,7 +46,12 @@ def test_v2_partitions_match_code_and_are_eight():
 def test_v2_metric_and_cost_basis_match_code():
     doc = json.loads(V2_PATH.read_text(encoding="utf-8"))
     assert doc["metric_v2"]["name"] == p.METRIC_NAME == "CORE_TOKENS_PARTIAL"
-    assert tuple(doc["cost_basis"]["values"]) == (p.COST_BASIS_PRICED, p.COST_BASIS_ZERO, p.COST_BASIS_UNKNOWN)
+    assert tuple(doc["cost_basis"]["values"]) == (
+        p.COST_BASIS_PRICED,
+        p.COST_BASIS_ZERO,
+        p.COST_BASIS_UNKNOWN,
+        p.COST_BASIS_SUBSCRIPTION,
+    )
 
 
 def test_every_partition_has_a_status_in_contract():
@@ -84,12 +89,20 @@ def test_cost_basis_for(cost, basis):
     assert p.cost_basis_for(cost) == basis
 
 
+def test_cost_basis_for_subscription():
+    assert p.cost_basis_for(None, is_subscription=True) == p.COST_BASIS_SUBSCRIPTION
+    assert p.cost_basis_for(1.23, is_subscription=True) == p.COST_BASIS_SUBSCRIPTION
+
+
 @pytest.mark.parametrize("bases,expected", [
     ([], "unknown"),
     (["priced_by_table", "unknown"], "unknown"),
     (["priced_zero_by_table", "priced_zero_by_table"], "priced_zero_by_table"),
     (["priced_zero_by_table", "priced_by_table"], "priced_by_table"),
     (["priced_by_table"], "priced_by_table"),
+    (["subscription_session"], "subscription_session"),
+    (["subscription_session", "subscription_session"], "subscription_session"),
+    (["subscription_session", "unknown"], "unknown"),
 ])
 def test_run_cost_basis(bases, expected):
     assert p.run_cost_basis(bases) == expected

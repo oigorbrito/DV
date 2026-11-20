@@ -55,14 +55,28 @@ OUTCOME_INCONCLUSIVE = "INCONCLUSIVE"
 VERDICT_PASS = "PASS"
 VERDICT_FAIL = "FAIL"
 
-# cost_basis: distingue custo real de preço zero da tabela e de custo desconhecido.
+# cost_basis: distingue custo real de preço zero da tabela, sessão de assinatura e custo desconhecido.
 COST_BASIS_PRICED = "priced_by_table"
 COST_BASIS_ZERO = "priced_zero_by_table"
 COST_BASIS_UNKNOWN = "unknown"
+COST_BASIS_SUBSCRIPTION = "subscription_session"
+
+COST_BASIS_VALUES: tuple[str, ...] = (
+    COST_BASIS_PRICED,
+    COST_BASIS_ZERO,
+    COST_BASIS_UNKNOWN,
+    COST_BASIS_SUBSCRIPTION,
+)
 
 
-def cost_basis_for(cost_usd: float | None) -> str:
-    """Base do custo de uma chamada. ``None`` é desconhecido; ``0.0`` vindo da tabela é zero de tabela."""
+def cost_basis_for(cost_usd: float | None, *, is_subscription: bool = False) -> str:
+    """Base do custo de uma chamada.
+
+    - ``is_subscription=True``: sessão de assinatura/conta (cost_usd deve ser None).
+    - ``None`` é desconhecido; ``0.0`` vindo da tabela é zero de tabela.
+    """
+    if is_subscription:
+        return COST_BASIS_SUBSCRIPTION
     if cost_usd is None:
         return COST_BASIS_UNKNOWN
     return COST_BASIS_ZERO if cost_usd == 0.0 else COST_BASIS_PRICED
@@ -72,6 +86,7 @@ def run_cost_basis(call_bases: list[str]) -> str:
     """Base do custo de um run, a partir das bases de cada chamada.
 
     - Qualquer ``unknown`` torna o run ``unknown``.
+    - Todas ``subscription_session`` torna o run ``subscription_session``.
     - Todas ``priced_zero_by_table`` torna o run ``priced_zero_by_table``.
     - Caso contrário ``priced_by_table``. Chamadas zero contribuem 0 ao total e
       são contadas à parte em ``zero_priced_calls``.
@@ -79,6 +94,8 @@ def run_cost_basis(call_bases: list[str]) -> str:
     """
     if not call_bases or COST_BASIS_UNKNOWN in call_bases:
         return COST_BASIS_UNKNOWN
+    if all(b == COST_BASIS_SUBSCRIPTION for b in call_bases):
+        return COST_BASIS_SUBSCRIPTION
     if all(b == COST_BASIS_ZERO for b in call_bases):
         return COST_BASIS_ZERO
     return COST_BASIS_PRICED
