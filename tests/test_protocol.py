@@ -21,6 +21,8 @@ V1_SHA256 = "3f1366846c095f3630e2f4bbaf0eb2555d8281fce8f1d9882f2952130813d86b"
 V3_PATH = ROOT / "experiments" / "p1" / "run-accounting-contract-v3.json"
 # Hash do v2 no commit 8cc338d (antes do v3). Qualquer mudança no v2 falha este teste.
 V2_SHA256 = "922f9a544468d69a60649fd59ff785e46b60d348815a9ce4e13419002d5e5d36"
+# Hash do v3 no commit 7298715 (contrato vigente). Qualquer mudança no v3 falha este teste.
+V3_SHA256 = "6f50e1187d1f9e9c9c268122532e58dda451f55ec538581fa860fb33301fef94"
 
 
 def test_v1_contract_is_unchanged():
@@ -112,6 +114,10 @@ def test_unmeasured_reasons_are_non_empty_strings():
 
 def _v3():
     return json.loads(V3_PATH.read_text(encoding="utf-8"))
+
+
+def test_v3_contract_is_unchanged():
+    assert hashlib.sha256(V3_PATH.read_bytes()).hexdigest() == V3_SHA256
 
 
 def test_v3_contract_names_v2_as_superseded_and_matches_code_id():

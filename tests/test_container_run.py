@@ -232,3 +232,69 @@ def test_dockerfile_runs_as_non_root_pins_deps_and_does_not_copy_the_repo():
     assert "requirements-dv-harness.txt" in text  # dependências fixadas, não versões soltas
     assert "COPY requirements-dv-harness.txt" in text
     assert "COPY . " not in text and "ADD " not in text  # o código entra por bind mount, não por cópia
+
+
+# --- proteção completa do caminho de falha (auditoria forense, correção 1) -----------
+
+
+@pytest.mark.parametrize("kill_exc", [
+    subprocess.TimeoutExpired(["docker", "kill"], 30),
+    subprocess.SubprocessError("kill crashed"),
+    FileNotFoundError(2, "No such file", "docker"),
+])
+def test_timeout_then_failed_kill_does_not_raise_and_still_removes_container(kill_exc):
+    # (a) timeout do comando + falha do `docker kill`: sem exceção não capturada, rm ainda é tentado.
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append(argv[1])
+        if argv[1] == "run":
+            raise subprocess.TimeoutExpired(argv, 1)
+        if argv[1] == "kill":
+            raise kill_exc
+        if argv[1] == "inspect":
+            return subprocess.CompletedProcess(argv, 0, stdout="false\n", stderr="")
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    result = dcr.run_container(dcr.Quotas(timeout_s=1), CMD, runner=runner)
+    assert result.timed_out is True
+    assert result.exit_code == dcr.EXIT_INFRA          # não 124: o timeout não foi garantido
+    assert result.cleanup_error is not None and "kill" in result.cleanup_error
+    assert calls == ["run", "kill", "inspect", "rm"]   # o finally executou até o fim
+
+
+@pytest.mark.parametrize("inspect_outcome", [
+    FileNotFoundError(2, "No such file", "docker"),
+    subprocess.SubprocessError("daemon went away"),
+    "rc1",
+    "garbage",
+])
+def test_failed_inspect_returns_125_never_0(inspect_outcome):
+    # (b) falha do `docker inspect` com o comando já concluído: a telemetria de OOM falhou -> 125.
+    def runner(argv, **kwargs):
+        if argv[1] == "inspect":
+            if inspect_outcome == "rc1":
+                return subprocess.CompletedProcess(argv, 1, stdout="", stderr="no such container")
+            if inspect_outcome == "garbage":
+                return subprocess.CompletedProcess(argv, 0, stdout="maybe\n", stderr="")
+            raise inspect_outcome
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    result = dcr.run_container(dcr.Quotas(), CMD, runner=runner)
+    assert result.exit_code == dcr.EXIT_INFRA
+    assert result.oom_killed is None
+    assert result.cleanup_error is not None and "inspect" in result.cleanup_error
+
+
+def test_failed_inspect_after_timeout_still_reports_124_only_if_kill_succeeded():
+    # Sanidade: timeout com kill bem-sucedido e inspect bem-sucedido continua 124 (não é erro de infra).
+    def runner(argv, **kwargs):
+        if argv[1] == "run":
+            raise subprocess.TimeoutExpired(argv, 1)
+        if argv[1] == "inspect":
+            return subprocess.CompletedProcess(argv, 0, stdout="false\n", stderr="")
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    result = dcr.run_container(dcr.Quotas(timeout_s=1), CMD, runner=runner)
+    assert result.exit_code == dcr.EXIT_TIMEOUT
+    assert result.cleanup_error is None

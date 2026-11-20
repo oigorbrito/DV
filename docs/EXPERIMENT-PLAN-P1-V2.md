@@ -132,10 +132,21 @@ estratos. Nesse caso o resultado é `NO_BUILD`, conforme a §11 do plano congela
 | Unidade (Modelo, Harness, Ambiente, Orçamento) | formalizada aqui |
 | Screening N=10 como pipeline | formalizado; pipeline ainda não executado com provedor real |
 | Ablação N≥30 estratificada | **proposta**; conflito com §3 do plano congelado; horizonte não definido |
-| Tríade de Pareto | formalizada; medição dos quatro baldes e de `false_finish` **validada no harness** (testes), não em provedor real |
+| Tríade de Pareto | formalizada. `cache_write_tokens`, `cache_read_tokens` e `output_tokens` são medidos quando o provedor os expõe, e isso é coberto por testes do harness. **`uncached_input_tokens` permanece `None` com `litellm 1.110.1`**: o litellm não expõe esse campo, e ele nunca é derivado por subtração. `false_finish_rate` é coberto por teste. Nada disso foi medido em provedor real. |
 | Alavancas L1, L2 | **pendentes**: não implementadas |
 | Alavanca L3 | implementada, sem ablação |
 | Gate de dominância | formalizado; **fechado** (sem dados) |
+
+### 7.1 Pendências explícitas antes das ablações
+
+Nenhuma ablação com N≥30 pode ser reportada enquanto todos os itens abaixo estiverem pendentes:
+
+1. **Definição operacional de horizonte** (curto versus médio/longo), fixada antes da observação (§3).
+2. **Diff de configuração gravado no ledger**, que prove que o braço muda apenas a alavanca declarada (§5).
+   Esse diff **não existe no código**: o ledger grava hoje `run_started` com a configuração do run, sem comparação entre braços.
+3. **Implementação de L1 (preservação seletiva de erros) e L2 (masking cache-aware)**, cada uma com teste de isolamento (§5).
+4. **Ratificação da emenda de N≥30 e do piso de estratos** como contrato versionado (§3).
+5. **Screening N=10 com provedor real**, somente após aprovação explícita do uso de API (§2).
 
 ## 8. Próximo passo
 

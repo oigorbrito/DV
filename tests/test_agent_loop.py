@@ -593,3 +593,19 @@ def test_token_bucket_is_none_when_one_call_does_not_expose_it(tmp_path):
     result = make_loop(tmp_path, ScriptedLLM([with_write, without])).run("t", "s", max_steps=10)
     assert result.total_cache_write_tokens is None
     assert "not exposed" in result.unmeasured["total_cache_write_tokens"]
+
+
+def test_total_cache_read_tokens_is_canonical_and_alias_is_kept(tmp_path):
+    import dataclasses
+    a = dataclasses.replace(make_response(calls=[call("c1", "run_bash", {"command": FAIL_CMD})]),
+                            cache_read_tokens=7, cached_input_tokens=7)
+    b = dataclasses.replace(make_response(calls=[submit("s", "done")]), cache_read_tokens=5, cached_input_tokens=5)
+    result = make_loop(tmp_path, ScriptedLLM([a, b])).run("t", "s", max_steps=10)
+    assert result.total_cache_read_tokens == 12
+    assert result.total_cached_input_tokens == result.total_cache_read_tokens  # alias v2 preservado
+
+
+def test_total_cache_read_tokens_is_none_with_reason_when_not_exposed(tmp_path):
+    result = make_loop(tmp_path, ScriptedLLM([make_response(calls=[submit("s", "done")])])).run("t", "s", max_steps=10)
+    assert result.total_cache_read_tokens is None
+    assert "not exposed" in result.unmeasured["total_cache_read_tokens"]

@@ -178,6 +178,8 @@ class LLMResponse:
     # Alias de cache_read_tokens (nome da v2, mantido). Subcampo, não somar ao total.
     cached_input_tokens: int | None = None
     # Subcampo de completion_tokens (não somar ao total).
+    # Nome canônico do balde de saída (= completion_tokens, inclui reasoning). Subcampo: não soma ao total.
+    output_tokens: int | None = None
     reasoning_tokens: int | None = None
     pricing_source: str | None = None
     attempts: tuple[AttemptRecord, ...] = field(default_factory=tuple)
@@ -290,6 +292,7 @@ class LLMClient:
             model_returned=_str_or_none(getattr(raw, "model", None)),
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
+            output_tokens=completion_tokens,
             total_tokens=total_tokens,
             cost_usd=cost,
             cost_basis=cost_basis_for(cost),

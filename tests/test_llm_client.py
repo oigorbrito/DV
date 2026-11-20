@@ -311,3 +311,18 @@ def test_cache_write_falls_back_to_cache_creation_name():
     resp = _client(lambda **_: _raw(content="ok", usage_obj=usage)).complete(MESSAGES)
     assert resp.cache_write_tokens == 5
     assert resp.cache_read_tokens is None
+
+
+def test_output_tokens_is_the_canonical_name_for_completion_tokens():
+    usage = SimpleNamespace(prompt_tokens=10, completion_tokens=6, total_tokens=16,
+                            completion_tokens_details=SimpleNamespace(reasoning_tokens=4))
+    resp = _client(lambda **_: _raw(content="ok", usage_obj=usage)).complete(MESSAGES)
+    assert resp.output_tokens == resp.completion_tokens == 6
+    assert resp.reasoning_tokens == 4  # subcampo: o total continua sendo prompt + completion
+    assert resp.total_tokens == 16
+
+
+def test_output_tokens_none_when_completion_not_exposed():
+    usage = SimpleNamespace(prompt_tokens=10, completion_tokens=None, total_tokens=None)
+    resp = _client(lambda **_: _raw(content="ok", usage_obj=usage)).complete(MESSAGES)
+    assert resp.output_tokens is None

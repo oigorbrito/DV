@@ -175,7 +175,8 @@ class AgentResult:
     provider_attempts: int = 0
     failed_attempt_count: int = 0
     tokens_lower_bound: int | None = None
-    total_cached_input_tokens: int | None = None
+    total_cached_input_tokens: int | None = None  # alias de total_cache_read_tokens (nome da v2)
+    total_cache_read_tokens: int | None = None
     total_reasoning_tokens: int | None = None
     total_wall_clock_ms: float | None = None
     llm_wall_clock_ms: float | None = None
@@ -504,6 +505,7 @@ class AgentLoop:
             failed_attempt_count=_failed_attempts(calls),
             tokens_lower_bound=_lower_bound(calls),
             total_cached_input_tokens=_total(calls, lambda c: c.cached_input_tokens),
+            total_cache_read_tokens=_total(calls, lambda c: c.cache_read_tokens),
             total_reasoning_tokens=_total(calls, lambda c: c.reasoning_tokens),
             total_uncached_input_tokens=_total(calls, lambda c: c.uncached_input_tokens),
             total_cache_write_tokens=_total(calls, lambda c: c.cache_write_tokens),
@@ -556,6 +558,7 @@ def _unmeasured_for(calls: list[CallRecord], total_tokens: int | None, run_id: s
         if value is None:
             unmeasured[key] = incomplete if calls else empty
     for key, getter in (
+        ("total_cache_read_tokens", lambda c: c.cache_read_tokens),
         ("total_uncached_input_tokens", lambda c: c.uncached_input_tokens),
         ("total_cache_write_tokens", lambda c: c.cache_write_tokens),
         ("total_output_tokens", lambda c: c.output_tokens),

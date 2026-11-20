@@ -154,6 +154,8 @@ def run_container(quotas: Quotas, command: Sequence[str], *, mounts: Sequence[st
     timed_out = False
     daemon_error = False
     cleanup_error: str | None = None
+    kill_error: str | None = None
+    rm_error: str | None = None
     stdout = stderr = ""
     try:
         cp = runner(argv, capture_output=True, text=True, timeout=quotas.timeout_s, check=False)
@@ -163,21 +165,28 @@ def run_container(quotas: Quotas, command: Sequence[str], *, mounts: Sequence[st
         timed_out = True
         stdout = exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
         stderr = exc.stderr.decode() if isinstance(exc.stderr, bytes) else (exc.stderr or "")
-        _docker(runner, ["kill", name], timeout=30)
+        try:
+            _docker(runner, ["kill", name], timeout=30)
+        except (OSError, subprocess.SubprocessError) as exc:  # kill falhou: o container pode seguir vivo
+            kill_error = f"kill: {type(exc).__name__}: {exc}"
     except (OSError, subprocess.SubprocessError) as exc:  # docker ausente do PATH ou falha do daemon
         daemon_error = True
         stderr = f"could not run docker: {type(exc).__name__}: {exc}"
     finally:
-        # Limpeza protegida: a leitura de OOMKilled e a remoção nunca levantam exceção.
-        oom_killed = _inspect_oom(runner, name)
+        # Limpeza protegida: nem a leitura de OOMKilled nem a remoção levantam exceção.
+        oom_killed, oom_error = _inspect_oom(runner, name)
         try:
             _docker(runner, ["rm", "-f", name], timeout=60)
         except (OSError, subprocess.SubprocessError) as exc:
-            cleanup_error = f"{type(exc).__name__}: {exc}"
+            rm_error = f"rm: {type(exc).__name__}: {exc}"
 
+    errors = [e for e in (kill_error, oom_error, rm_error) if e]
+    if errors:
+        cleanup_error = "; ".join(errors)
+        daemon_error = True  # telemetria ou limpeza incompleta: falha de infraestrutura, não do comando
     if cleanup_error is not None:
-        daemon_error = True  # container possivelmente não removido: falha de infraestrutura, não do comando
-    if timed_out:
+        exit_code = EXIT_INFRA  # nunca 0 nem 124 quando a limpeza ou a telemetria de OOM falhou
+    elif timed_out:
         exit_code = EXIT_TIMEOUT
     elif daemon_error:
         exit_code = EXIT_INFRA
@@ -199,17 +208,20 @@ def run_container(quotas: Quotas, command: Sequence[str], *, mounts: Sequence[st
     return result
 
 
-def _inspect_oom(runner: Runner, name: str) -> bool | None:
+def _inspect_oom(runner: Runner, name: str) -> tuple[bool | None, str | None]:
+    """Lê State.OOMKilled. Devolve ``(valor, erro)``. Qualquer falha de telemetria devolve ``(None, erro)``:
+    nunca ``False`` por padrão, porque isso seria uma medição que não aconteceu.
+    """
     try:
         cp = _docker(runner, ["inspect", "-f", "{{.State.OOMKilled}}", name], timeout=30)
-    except (OSError, subprocess.SubprocessError):
-        return None  # binário ausente ou daemon indisponível: não medido
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"inspect: {type(exc).__name__}: {exc}"
     if cp.returncode != 0:
-        return None  # container ausente ou daemon indisponível: não medido, nunca False por padrão
+        return None, f"inspect: exit {cp.returncode}: {(cp.stderr or '').strip()[:200]}"
     value = (cp.stdout or "").strip().lower()
     if value not in ("true", "false"):
-        return None
-    return value == "true"
+        return None, f"inspect: unexpected output {value!r}"
+    return value == "true", None
 
 
 def main(argv: Sequence[str] | None = None) -> int:
