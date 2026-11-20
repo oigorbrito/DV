@@ -312,3 +312,73 @@ def test_tool_schemas_cover_the_four_primitives():
 def test_tool_result_defaults():
     r = ToolResult(ok=True)
     assert (r.output, r.error, r.exit_code, r.truncated) == ("", None, None, False)
+
+
+# --- trava de workspace (revisão de auditoria) ----------------------------------
+
+
+def test_absolute_path_inside_root_is_allowed(ex, tmp_path):
+    (tmp_path / "inside.txt").write_text("ok\n", encoding="utf-8")
+    assert ex.read_file(str(tmp_path / "inside.txt")).ok
+
+
+def test_absolute_path_outside_root_is_refused(ex, tmp_path):
+    outside = tmp_path.parent / "outside_probe.txt"
+    outside.write_text("secret", encoding="utf-8")
+    try:
+        r = ex.read_file(str(outside))
+        assert r.ok is False and "escapes workspace root" in r.error
+        assert r.output == ""
+    finally:
+        outside.unlink()
+
+
+def test_traversal_with_dotdot_is_refused_for_write_and_edit(ex, tmp_path):
+    escape_target = tmp_path.parent / "dv_escape_write.txt"
+    if escape_target.exists():
+        escape_target.unlink()
+    r = ex.write_file("../dv_escape_write.txt", "pwned")
+    assert r.ok is False and "escapes workspace root" in r.error
+    assert not escape_target.exists()
+
+    (tmp_path / "f.txt").write_text("abc", encoding="utf-8")
+    r2 = ex.edit_file("../f.txt", "abc", "x")
+    assert r2.ok is False and "escapes workspace root" in r2.error
+
+
+def test_symlink_inside_root_pointing_outside_is_refused(ex, tmp_path):
+    outside = tmp_path.parent / "dv_symlink_target.txt"
+    outside.write_text("secret", encoding="utf-8")
+    link = tmp_path / "link.txt"
+    link.symlink_to(outside)
+    try:
+        r = ex.read_file("link.txt")
+        assert r.ok is False and "escapes workspace root" in r.error
+    finally:
+        outside.unlink()
+
+
+@posix_only
+def test_run_bash_cwd_escape_is_refused(ex):
+    r = ex.run_bash("pwd", cwd="/")
+    assert r.ok is False and "escapes workspace root" in r.error
+    r2 = ex.run_bash("pwd", cwd="../..")
+    assert r2.ok is False and "escapes workspace root" in r2.error
+
+
+@posix_only
+def test_run_bash_cwd_root_itself_is_allowed(ex, tmp_path):
+    r = ex.run_bash("pwd", cwd=".")
+    assert r.ok is True
+    assert Path(r.output.strip()).resolve() == tmp_path.resolve()
+
+
+def test_workspace_root_is_resolved_once(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "linkroot"
+    link.symlink_to(real, target_is_directory=True)
+    executor = ToolExecutor(link)
+    assert executor.root == real.resolve()
+    (real / "a.txt").write_text("hi\n", encoding="utf-8")
+    assert executor.read_file("a.txt").ok

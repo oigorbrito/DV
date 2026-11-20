@@ -16,10 +16,13 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from dv_harness.agent_loop import (  # noqa: E402
+    ERROR_MAX_CHARS,
     STATUS_BUDGET,
     STATUS_COMPLETED,
     STATUS_MAX_STEPS,
+    STATUS_PROVIDER_ERROR,
     STATUS_UNVERIFIABLE,
+    UNMEASURED_CORE,
     AgentLoop,
 )
 from dv_harness.context_manager import DEFAULT_PLACEHOLDER, ContextManager  # noqa: E402
@@ -57,6 +60,8 @@ class ScriptedLLM:
     def complete(self, messages, tools=None, model=None):
         self.calls.append({"messages": copy.deepcopy(list(messages)), "tools": tools})
         item = self.script[min(len(self.calls) - 1, len(self.script) - 1)]
+        if isinstance(item, BaseException):
+            raise item
         return item(messages) if callable(item) else item
 
 
@@ -301,3 +306,187 @@ def test_no_masking_when_window_covers_all(tmp_path):
     ])
     result = make_loop(tmp_path, llm, keep_recent=10).run("t", "s")
     assert result.chars_saved_by_masking == 0
+
+
+# --- ordem de orçamento: checado antes de executar ferramentas -----------------------
+
+
+def test_budget_on_final_text_turn_keeps_final_answer(tmp_path):
+    llm = ScriptedLLM([resp(content="the answer", prompt=60, completion=40, cost=0.01)])
+    result = make_loop(tmp_path, llm).run("t", "s", max_tokens=100)
+    assert result.status == STATUS_BUDGET
+    assert result.final_answer == "the answer"
+    assert result.steps == 1
+
+
+def test_unverifiable_budget_on_final_text_turn_keeps_final_answer(tmp_path):
+    llm = ScriptedLLM([resp(content="maybe right", cost=None)])
+    result = make_loop(tmp_path, llm).run("t", "s", max_cost_usd=1.0)
+    assert result.status == STATUS_UNVERIFIABLE
+    assert result.final_answer == "maybe right"
+    assert result.total_cost_usd is None
+
+
+def test_budget_exceeded_on_tool_turn_does_not_execute_tools(tmp_path):
+    # Efeito colateral proibido após estourar orçamento: o arquivo não pode ser criado.
+    llm = ScriptedLLM([resp(
+        calls=[call("w1", "write_file", {"path": "should_not_exist.txt", "content": "x"})],
+        prompt=60, completion=40, cost=0.01,
+    )])
+    result = make_loop(tmp_path, llm).run("t", "s", max_tokens=100)
+    assert result.status == STATUS_BUDGET
+    assert not (tmp_path / "should_not_exist.txt").exists()
+    observation = next(m["content"] for m in result.messages if m.get("tool_call_id") == "w1")
+    assert observation.startswith("not executed: run stopped with status budget_exceeded")
+    # O protocolo continua válido: a chamada tem resposta tool correspondente.
+    assistant = next(m for m in result.messages if m["role"] == "assistant")
+    assert [c["id"] for c in assistant["tool_calls"]] == ["w1"]
+
+
+def test_final_answer_is_none_not_empty_string(tmp_path):
+    llm = ScriptedLLM([resp(content="", cost=0.01)])
+    assert make_loop(tmp_path, llm).run("t", "s").final_answer is None
+    llm2 = ScriptedLLM([resp(content=None, cost=0.01)])
+    assert make_loop(tmp_path, llm2).run("t", "s").final_answer is None
+
+
+# --- falha do provedor -----------------------------------------------------------
+
+
+def test_provider_error_preserves_accumulated_accounting_and_messages(tmp_path):
+    llm = ScriptedLLM([
+        resp(calls=[call("b1", "run_bash", {"command": "echo hi"})], prompt=30, completion=20, cost=0.2),
+        RuntimeError("provider 500: upstream unavailable"),
+    ])
+    result = make_loop(tmp_path, llm).run("t", "s")
+
+    assert result.status == STATUS_PROVIDER_ERROR
+    assert result.final_answer is None
+    assert result.steps == 1
+    assert result.total_prompt_tokens == 30
+    assert result.total_completion_tokens == 20
+    assert result.total_tokens == 50
+    assert result.total_cost_usd is None  # chamada que falhou tem custo desconhecido
+    assert result.provider_calls_failed == 1
+    assert "RuntimeError: provider 500" in result.error
+    # Histórico acumulado até a falha: a observação do primeiro passo permanece.
+    assert any(m.get("tool_call_id") == "b1" for m in result.messages)
+    assert [c.outcome for c in result.calls] == ["ok", "provider_error"]
+    assert "failed_call_usage" in result.unmeasured
+
+
+def test_provider_error_on_first_call_has_zero_steps_and_unknown_usage(tmp_path):
+    result = make_loop(tmp_path, ScriptedLLM([ConnectionError("down")])).run("t", "s")
+    assert result.status == STATUS_PROVIDER_ERROR
+    assert result.steps == 0
+    assert result.total_tokens == 0
+    assert result.total_cost_usd is None
+    assert result.total_cached_input_tokens is None
+    assert result.total_reasoning_tokens is None
+    assert len(result.messages) == 2  # somente system e user
+
+
+def test_provider_error_message_is_truncated(tmp_path):
+    result = make_loop(tmp_path, ScriptedLLM([RuntimeError("x" * (ERROR_MAX_CHARS * 3))])).run("t", "s")
+    assert len(result.error) <= ERROR_MAX_CHARS + len("RuntimeError: ...")
+    assert result.error.endswith("...")
+
+
+# --- telemetria por chamada e declaração de não medidos -----------------------------
+
+
+def test_call_records_and_wall_clock_totals(tmp_path):
+    llm = ScriptedLLM([
+        resp(calls=[call("b1", "run_bash", {"command": "echo a"})], prompt=10, completion=5, cost=0.1),
+        resp(content="done", prompt=7, completion=3, cost=0.2),
+    ])
+    result = make_loop(tmp_path, llm).run("t", "s")
+    assert [c.index for c in result.calls] == [1, 2]
+    assert all(c.outcome == "ok" for c in result.calls)
+    assert result.calls[0].total_tokens == 15 and result.calls[1].total_tokens == 10
+    assert result.calls[0].wall_clock_ms >= 0
+    assert result.llm_wall_clock_ms == pytest.approx(sum(c.wall_clock_ms for c in result.calls))
+    assert result.tool_wall_clock_ms >= 0
+    assert result.total_wall_clock_ms >= result.llm_wall_clock_ms
+
+
+def test_unmeasured_declares_out_of_scope_partitions(tmp_path):
+    result = make_loop(tmp_path, ScriptedLLM([resp(content="x")])).run("t", "s")
+    for key in ("verification", "routing", "planning", "escalation_handoff", "retry_replanning", "pricing_date"):
+        assert key in result.unmeasured
+        assert result.unmeasured[key] == UNMEASURED_CORE[key]
+
+
+def _with_details(base: LLMResponse, cached, reasoning) -> LLMResponse:
+    return LLMResponse(**{**base.__dict__, "cached_input_tokens": cached, "reasoning_tokens": reasoning})
+
+
+def test_cache_and_reasoning_totals_sum_when_exposed(tmp_path):
+    # Dois passos com detalhes expostos: totais somam.
+    llm = ScriptedLLM([
+        _with_details(resp(calls=[call("b1", "run_bash", {"command": "echo a"})]), 10, 2),
+        _with_details(resp(content="done"), 40, 5),
+    ])
+    result = make_loop(tmp_path, llm).run("t", "s")
+    assert result.total_cached_input_tokens == 50
+    assert result.total_reasoning_tokens == 7
+    assert "cached_input_tokens" not in result.unmeasured
+    assert result.calls[0].cached_input_tokens == 10
+
+
+def test_cache_total_is_unmeasured_when_one_call_does_not_expose_it(tmp_path):
+    # Primeiro passo sem detalhes: o total não é medido, e não pode ser lido como zero.
+    llm = ScriptedLLM([
+        resp(calls=[call("b1", "run_bash", {"command": "echo a"})]),  # cached_input_tokens=None
+        _with_details(resp(content="done"), 40, 5),
+    ])
+    result = make_loop(tmp_path, llm).run("t", "s")
+    assert result.total_cached_input_tokens is None
+    assert "cached_input_tokens" in result.unmeasured
+    assert result.total_reasoning_tokens is None
+    assert result.calls[0].cached_input_tokens is None
+
+
+def test_consecutive_runs_do_not_share_state(tmp_path):
+    loop = make_loop(tmp_path, ScriptedLLM([
+        resp(calls=[call("b1", "run_bash", {"command": "echo a"})], cost=0.1),
+        resp(content="a"),
+    ]))
+    r1 = loop.run("t1", "s")
+    loop.llm.script = [resp(content="b", cost=0.5)]
+    loop.llm.n = 0
+    r2 = loop.run("t2", "s")
+    assert r1.messages is not r2.messages
+    assert r1.calls is not r2.calls
+    assert r1.steps == 2 and r2.steps == 1
+    assert r2.total_cost_usd == pytest.approx(0.5)
+    assert len(r1.calls) == 2
+
+
+# --- trava de workspace no loop -----------------------------------------------------
+
+
+def test_model_path_escape_becomes_observation_and_loop_continues(tmp_path):
+    outside = tmp_path.parent / "outside_secret.txt"
+    llm = ScriptedLLM([
+        resp(calls=[call("e1", "read_file", {"path": str(outside)})]),
+        resp(calls=[call("e2", "run_bash", {"command": "echo ok", "cwd": "/"})]),
+        resp(content="recovered"),
+    ])
+    result = make_loop(tmp_path, llm).run("t", "s")
+    obs = {m["tool_call_id"]: m["content"] for m in result.messages if m["role"] == "tool"}
+    assert "escapes workspace root" in obs["e1"]
+    assert "escapes workspace root" in obs["e2"]
+    assert result.status == STATUS_COMPLETED
+    assert result.final_answer == "recovered"
+
+
+def test_tool_arguments_not_an_object_become_observation(tmp_path):
+    llm = ScriptedLLM([
+        resp(calls=[call("a1", "read_file", "[1, 2]")]),
+        resp(content="ok"),
+    ])
+    result = make_loop(tmp_path, llm).run("t", "s")
+    obs = next(m["content"] for m in result.messages if m.get("tool_call_id") == "a1")
+    assert obs.startswith("error: invalid JSON arguments for read_file")
+    assert result.status == STATUS_COMPLETED

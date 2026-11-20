@@ -8,8 +8,13 @@ Erros de programação, como tipos inválidos, ainda levantam exceção.
 Este módulo não contém loop de agente, política de decisão nem gerenciamento de
 contexto (Módulos 3 e 4, ainda não implementados).
 
-Não é sandbox. ``run_bash`` executa comandos com os privilégios do processo. Restringir
-o que o agente pode fazer é responsabilidade do ambiente que o executa.
+Trava de workspace: os parâmetros ``path`` das primitivas de arquivo e ``cwd`` do
+``run_bash`` são resolvidos com ``.resolve()`` (seguindo links simbólicos) e precisam ficar
+dentro de ``root``. Caso contrário, a primitiva devolve ``ToolResult(ok=False)``. Essa trava
+não é um sandbox. O texto de um comando ``run_bash`` pode acessar qualquer caminho do
+sistema, por exemplo com ``cat /etc/passwd``. Por isso o benchmark deve rodar em workspace
+isolado (container ou worktree descartável). Restringir o que o agente pode fazer continua
+sendo responsabilidade do ambiente que o executa.
 
 Atribuições empíricas
 ---------------------
@@ -57,6 +62,10 @@ _NON_INTERACTIVE_ENV = {
 }
 
 
+class WorkspaceEscapeError(ValueError):
+    """Caminho ou ``cwd`` fora do ``root`` do executor."""
+
+
 @dataclass(frozen=True)
 class ToolResult:
     ok: bool
@@ -97,12 +106,20 @@ class ToolExecutor:
         *,
         max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS,
     ) -> None:
-        self.root = Path(root) if root is not None else Path.cwd()
+        self.root = (Path(root) if root is not None else Path.cwd()).resolve()
         self.max_output_chars = max_output_chars
 
     def _resolve(self, path: str) -> Path:
+        """Resolve ``path`` contra ``root``, seguindo links simbólicos.
+
+        Levanta ``WorkspaceEscapeError`` se o alvo ficar fora de ``root``. Os métodos
+        públicos convertem isso em ``ToolResult(ok=False)`` para o modelo se recuperar.
+        """
         p = Path(path)
-        return p if p.is_absolute() else self.root / p
+        candidate = (p if p.is_absolute() else self.root / p).resolve()
+        if candidate != self.root and not candidate.is_relative_to(self.root):
+            raise WorkspaceEscapeError(f"path escapes workspace root: {path}")
+        return candidate
 
     # --- read_file -----------------------------------------------------------
 
@@ -118,7 +135,10 @@ class ToolExecutor:
         if end_line is not None and start_line is not None and end_line < start_line:
             return ToolResult(ok=False, error="end_line must be >= start_line")
 
-        target = self._resolve(path)
+        try:
+            target = self._resolve(path)
+        except WorkspaceEscapeError as exc:
+            return ToolResult(ok=False, error=str(exc))
         if not target.exists():
             return ToolResult(ok=False, error=f"file not found: {path}")
         if target.is_dir():
@@ -149,7 +169,10 @@ class ToolExecutor:
 
     def write_file(self, path: str, content: str) -> ToolResult:
         """Cria ou sobrescreve arquivo texto UTF-8, criando diretórios pai se necessário."""
-        target = self._resolve(path)
+        try:
+            target = self._resolve(path)
+        except WorkspaceEscapeError as exc:
+            return ToolResult(ok=False, error=str(exc))
         if target.is_dir():
             return ToolResult(ok=False, error=f"is a directory: {path}")
         try:
@@ -165,7 +188,10 @@ class ToolExecutor:
         """Substitui ``old_text`` por ``new_text``. Falha se não existir ou aparecer mais de uma vez."""
         if not old_text:
             return ToolResult(ok=False, error="old_text must not be empty")
-        target = self._resolve(path)
+        try:
+            target = self._resolve(path)
+        except WorkspaceEscapeError as exc:
+            return ToolResult(ok=False, error=str(exc))
         if not target.is_file():
             return ToolResult(ok=False, error=f"file not found: {path}")
         try:
@@ -204,7 +230,13 @@ class ToolExecutor:
         """Executa ``command`` em um shell novo, sem estado entre chamadas."""
         if timeout <= 0:
             raise ValueError("timeout must be > 0")
-        workdir = self._resolve(str(cwd)) if cwd is not None else self.root
+        if cwd is not None:
+            try:
+                workdir = self._resolve(str(cwd))
+            except WorkspaceEscapeError as exc:
+                return ToolResult(ok=False, error=str(exc))
+        else:
+            workdir = self.root
         env = {**os.environ, **_NON_INTERACTIVE_ENV}
         # Popen em sessão própria para poder matar o grupo inteiro no timeout.
         # Com subprocess.run, filhos em background (ex.: "sleep 30 & sleep 30") sobreviviam
