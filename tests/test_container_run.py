@@ -298,3 +298,123 @@ def test_failed_inspect_after_timeout_still_reports_124_only_if_kill_succeeded()
     result = dcr.run_container(dcr.Quotas(timeout_s=1), CMD, runner=runner)
     assert result.exit_code == dcr.EXIT_TIMEOUT
     assert result.cleanup_error is None
+
+
+# --- montagem do repositório em /app e PYTHONPATH (ajuste 1 de smoke-in-container) ----
+
+
+def _pairs(argv):
+    return list(zip(argv, argv[1:], strict=False))
+
+
+def test_repo_is_mounted_read_only_at_app_with_pythonpath():
+    argv = dcr.build_argv(dcr.Quotas(), "n", CMD, repo=r"D:\projetos\dv-baseline")
+    assert ("--mount", "type=bind,source=D:\\projetos\\dv-baseline,target=/app,readonly") in _pairs(argv)
+    assert ("-e", "PYTHONPATH=/app/src") in _pairs(argv)
+
+
+def test_pythonpath_is_set_even_without_repo_mount():
+    assert ("-e", "PYTHONPATH=/app/src") in _pairs(dcr.build_argv(dcr.Quotas(), "n", CMD))
+
+
+def test_repo_path_with_comma_is_refused_before_docker():
+    fake = FakeDocker()
+    with pytest.raises(dcr.QuotaError, match="','"):
+        dcr.run_container(dcr.Quotas(), CMD, repo="/x,target=/etc", runner=fake)
+    assert fake.calls == []
+
+
+def test_second_mount_at_app_is_refused_when_repo_is_mounted():
+    with pytest.raises(dcr.QuotaError, match="/app"):
+        dcr.build_argv(dcr.Quotas(), "n", CMD, repo="/repo", mounts=["D:\\x:/app:ro"])
+
+
+def test_cli_dry_run_mounts_repo_and_sets_pythonpath(capsys):
+    assert dcr.main(["--dry-run", "--", "python", "/app/scripts/dv_smoke_run.py", "--help"]) == 0
+    out = capsys.readouterr().out
+    assert "target=/app,readonly" in out and "PYTHONPATH=/app/src" in out
+    assert out.rstrip().endswith("python /app/scripts/dv_smoke_run.py --help")
+
+
+# --- --pass-env: só o nome, nunca o valor (ajuste 2) ----------------------------------
+
+SECRET = "sk-test-SECRET-0123456789"
+
+
+def test_pass_env_emits_bare_name_flag_without_value(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", SECRET)
+    argv = dcr.build_argv(dcr.Quotas(), "n", CMD, pass_env=["ANTHROPIC_API_KEY"])
+    assert ("-e", "ANTHROPIC_API_KEY") in _pairs(argv)
+    assert not any("=" in a and "ANTHROPIC_API_KEY" in a for a in argv)
+    assert all(SECRET not in a for a in argv)
+
+
+def test_pass_env_can_be_repeated(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    monkeypatch.setenv("DV_OTHER_TOKEN", "y")
+    argv = dcr.build_argv(dcr.Quotas(), "n", CMD, pass_env=["ANTHROPIC_API_KEY", "DV_OTHER_TOKEN"])
+    assert ("-e", "ANTHROPIC_API_KEY") in _pairs(argv) and ("-e", "DV_OTHER_TOKEN") in _pairs(argv)
+
+
+def test_pass_env_refuses_name_equals_value_without_echoing_it(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", SECRET)
+    fake = FakeDocker()
+    with pytest.raises(dcr.QuotaError, match="NAME only") as info:
+        dcr.run_container(dcr.Quotas(), CMD, pass_env=[f"ANTHROPIC_API_KEY={SECRET}"], runner=fake)
+    assert SECRET not in str(info.value)
+    assert fake.calls == []  # recusado antes de qualquer chamada ao docker
+
+
+@pytest.mark.parametrize("bad", ["api_key", "1KEY", "A-B", "", "ANTHROPIC_API_KEY\n", "KEY SPACE"])
+def test_pass_env_refuses_names_outside_the_pattern(monkeypatch, bad):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", SECRET)
+    with pytest.raises(dcr.QuotaError, match="must match"):
+        dcr.build_argv(dcr.Quotas(), "n", CMD, pass_env=[bad])
+
+
+def test_pass_env_missing_from_host_fails_before_docker(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    fake = FakeDocker()
+    with pytest.raises(dcr.QuotaError, match="not set"):
+        dcr.run_container(dcr.Quotas(), CMD, pass_env=["ANTHROPIC_API_KEY"], runner=fake)
+    assert fake.calls == []
+
+
+def test_pass_env_empty_value_counts_as_missing(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    with pytest.raises(dcr.QuotaError, match="not set"):
+        dcr.build_argv(dcr.Quotas(), "n", CMD, pass_env=["ANTHROPIC_API_KEY"])
+
+
+def test_cli_missing_pass_env_exits_2_without_running_docker(monkeypatch, capsys):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    # Sem --dry-run: se a checagem falhasse, o subprocess real chamaria o docker. Não deve chegar lá.
+    assert dcr.main(["--pass-env", "ANTHROPIC_API_KEY", "--", *CMD]) == 2
+    assert "ANTHROPIC_API_KEY" in capsys.readouterr().err
+
+
+def test_cli_refuses_name_equals_value_and_does_not_echo_it(monkeypatch, capsys):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", SECRET)
+    assert dcr.main(["--pass-env", f"ANTHROPIC_API_KEY={SECRET}", "--dry-run", "--", *CMD]) == 2
+    captured = capsys.readouterr()
+    assert SECRET not in captured.err and SECRET not in captured.out
+
+
+def test_cli_dry_run_with_pass_env_prints_name_not_value(monkeypatch, capsys):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", SECRET)
+    assert dcr.main(["--pass-env", "ANTHROPIC_API_KEY", "--dry-run", "--", *CMD]) == 0
+    out = capsys.readouterr().out
+    assert "-e ANTHROPIC_API_KEY" in out and SECRET not in out
+
+
+def test_pass_env_name_and_no_value_reach_the_ledger(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", SECRET)
+    fake = FakeDocker(run=lambda argv: subprocess.CompletedProcess(argv, 0, stdout="", stderr=""))
+    path = tmp_path / "ledger.jsonl"
+    with RunLedger(path) as ledger:
+        dcr.run_container(dcr.Quotas(), CMD, pass_env=["ANTHROPIC_API_KEY"], ledger=ledger, runner=fake)
+    text = path.read_text(encoding="utf-8")
+    assert SECRET not in text
+    (event,) = [e for e in read_events(path) if e["event"] == "infra_finished"]
+    assert event["pass_env"] == ["ANTHROPIC_API_KEY"]
+    assert all(SECRET not in a for call in fake.calls for a in call)

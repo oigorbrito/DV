@@ -5,9 +5,12 @@ Uso, a partir da raiz do repositório:
 
     python scripts/dv_container_run.py --dry-run -- python /app/scripts/dv_canary_check.py --workdir /work/canary
     python scripts/dv_container_run.py --ledger <arquivo.jsonl> -- python /app/scripts/dv_canary_check.py --workdir /work/canary
+    python scripts/dv_container_run.py --pass-env ANTHROPIC_API_KEY -- python /app/scripts/dv_smoke_run.py --help
 
 Padrões: ``--network none``, ``--cpus 1``, ``--memory 512m``, ``--pids-limit 256``, ``--timeout-s 300``.
-O código do repositório entra em ``/app`` somente leitura. ``/work`` é tmpfs. O sistema de
+O repositório entra em ``/app`` somente leitura (bind mount ``--mount``, válido em Docker Desktop no Windows),
+com ``PYTHONPATH=/app/src``. ``--pass-env NAME`` repassa uma variável do host pelo nome (``-e NAME``): o valor
+nunca aparece no argv, no dry-run nem no ledger. ``/work`` é tmpfs. O sistema de
 arquivos da raiz é somente leitura. Sem capacidades extras (``--cap-drop ALL``).
 
 Desvio deliberado de ``--rm``: o container é criado com nome único e removido com
@@ -23,13 +26,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
 import time
 import uuid
 from collections.abc import Callable, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +50,9 @@ DAEMON_ERROR_MARKERS = ("Cannot connect to the Docker daemon", "failed to connec
                         "error during connect", "docker daemon is not running")
 
 _MEMORY_RE = re.compile(r"^[1-9][0-9]*[bkmg]?$")
+APP_TARGET = "/app"  # destino do repositório dentro do container (somente leitura)
+APP_SRC = "/app/src"  # PYTHONPATH do pacote dv_harness dentro do container
+PASS_ENV_RE = re.compile(r"[A-Z_][A-Z0-9_]*")  # nome de variável de ambiente, sem '='
 
 Runner = Callable[..., subprocess.CompletedProcess]
 
@@ -82,11 +89,39 @@ class Quotas:
             raise QuotaError("image must not be empty")
 
 
+def check_pass_env(names: Sequence[str]) -> None:
+    """Valida ``--pass-env``. Aceita só nomes: ``NAME=valor`` é recusado, porque o valor iria para o argv e os logs.
+    O argumento recusado nunca é ecoado na mensagem de erro, pois pode conter um segredo.
+    """
+    for name in names:
+        if "=" in name:
+            raise QuotaError("--pass-env takes a variable NAME only; values are never placed on the command line")
+        if not PASS_ENV_RE.fullmatch(name):
+            raise QuotaError("--pass-env name must match [A-Z_][A-Z0-9_]*")
+        if not os.environ.get(name):
+            raise QuotaError(f"--pass-env {name} is not set (or empty) in the host environment")
+
+
+def _repo_mount(repo: str) -> str:
+    if "," in repo:
+        raise QuotaError("repo path must not contain ',' (it breaks the --mount syntax)")
+    return f"type=bind,source={repo},target={APP_TARGET},readonly"
+
+
 def build_argv(quotas: Quotas, name: str, command: Sequence[str], *,
-               mounts: Sequence[str] = ()) -> list[str]:
-    """Argumentos de ``docker run`` com as quotas fixas. Pura: não executa nada."""
+               mounts: Sequence[str] = (), repo: str | None = None,
+               pass_env: Sequence[str] = ()) -> list[str]:
+    """Argumentos de ``docker run`` com as quotas fixas. Pura: não executa nada.
+
+    ``repo``: caminho do host montado em ``/app`` somente leitura (``--mount type=bind,...,readonly``).
+    ``pass_env``: nomes de variáveis herdadas do host (``-e NAME``, sem valor). Falha antes do docker se
+    um nome for inválido, contiver ``=`` ou estiver ausente do ambiente do host.
+    """
     if not command:
         raise QuotaError("command must not be empty")
+    check_pass_env(pass_env)
+    if repo is not None and any(re.search(rf":{APP_TARGET}(:|$)", m) for m in mounts):
+        raise QuotaError("/app is the repo mount; a second mount at /app is refused")
     argv = [
         "docker", "run",
         "--name", name,
@@ -102,9 +137,14 @@ def build_argv(quotas: Quotas, name: str, command: Sequence[str], *,
         "--tmpfs", "/work:rw,size=128m,mode=1777",
         "-w", "/work",
         "-e", "PYTHONDONTWRITEBYTECODE=1",
+        "-e", f"PYTHONPATH={APP_SRC}",
     ]
+    if repo is not None:
+        argv += ["--mount", _repo_mount(repo)]
     for mount in mounts:
         argv += ["-v", mount]
+    for var in pass_env:
+        argv += ["-e", var]  # só o nome: o docker herda o valor do ambiente deste processo
     return [*argv, quotas.image, *command]
 
 
@@ -121,6 +161,7 @@ class ContainerResult:
     stdout: str
     stderr: str
     cleanup_error: str | None = None  # falha ao ler OOMKilled ou remover o container (infra)
+    pass_env: list[str] = field(default_factory=list)  # somente NOMES de variáveis repassadas
 
     @property
     def cmd_timeouts(self) -> int:
@@ -140,6 +181,7 @@ def _docker(runner: Runner, args: list[str], timeout: float) -> subprocess.Compl
 
 
 def run_container(quotas: Quotas, command: Sequence[str], *, mounts: Sequence[str] = (),
+                  repo: str | None = None, pass_env: Sequence[str] = (),
                   allow_network: bool = False, ledger: Any | None = None,
                   runner: Runner = subprocess.run) -> ContainerResult:
     """Executa ``command`` num container descartável e devolve a telemetria.
@@ -148,7 +190,7 @@ def run_container(quotas: Quotas, command: Sequence[str], *, mounts: Sequence[st
     """
     quotas.validate(allow_network=allow_network)
     name = f"dv-run-{uuid.uuid4().hex[:12]}"
-    argv = build_argv(quotas, name, command, mounts=mounts)
+    argv = build_argv(quotas, name, command, mounts=mounts, repo=repo, pass_env=pass_env)
     started = time.perf_counter()
     exit_code: int | None = None
     timed_out = False
@@ -202,6 +244,7 @@ def run_container(quotas: Quotas, command: Sequence[str], *, mounts: Sequence[st
         stdout=_clip(stdout),
         stderr=_clip(stderr),
         cleanup_error=cleanup_error,
+        pass_env=list(pass_env),
     )
     if ledger is not None:
         ledger.append("infra_finished", result.as_dict())
@@ -234,6 +277,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--network", default="none", help="padrão 'none'; outro valor exige --allow-network")
     parser.add_argument("--allow-network", action="store_true")
     parser.add_argument("--mount", action="append", default=[], metavar="HOST:CONTAINER[:ro]")
+    parser.add_argument("--pass-env", action="append", default=[], metavar="NAME",
+                        help="repassa a variável do host pelo nome (repetível); nunca NAME=valor")
     parser.add_argument("--ledger", type=Path, default=None, help="grava evento infra_finished em JSONL")
     parser.add_argument("--dry-run", action="store_true", help="imprime o argv do docker e não executa")
     parser.add_argument("command", nargs=argparse.REMAINDER)
@@ -245,7 +290,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         quotas.validate(allow_network=args.allow_network)
         if args.dry_run:
-            print(" ".join(build_argv(quotas, "<name>", command, mounts=args.mount)))
+            print(" ".join(build_argv(quotas, "<name>", command, mounts=args.mount, repo=str(REPO),
+                                     pass_env=args.pass_env)))
             return 0
         ledger = None
         if args.ledger is not None:
@@ -255,8 +301,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             ledger = RunLedger(args.ledger)
         try:
-            result = run_container(quotas, command, mounts=args.mount, allow_network=args.allow_network,
-                                   ledger=ledger)
+            result = run_container(quotas, command, mounts=args.mount, repo=str(REPO),
+                                   pass_env=args.pass_env, allow_network=args.allow_network, ledger=ledger)
         finally:
             if ledger is not None:
                 ledger.close()
