@@ -42,6 +42,8 @@ MAX_STEPS = 8
 MAX_COST_USD = 0.10
 KEY_VAR = "ANTHROPIC_API_KEY"  # padrão; --api-key-env troca
 KEY_NAME_RE = re.compile(r"[A-Z_][A-Z0-9_]*")
+# Orçamento de tempo: 3 tentativas × 30s + backoff (2s + 4s) = 96s < --timeout-s 300 do container.
+REQUEST_TIMEOUT_S = 30.0  # padrão; --request-timeout-s troca
 
 BUGGY_CALC = "def add(a, b):\n    return a - b\n"
 CHECK = "from calc import add\n\nassert add(2, 3) == 5\nassert add(-1, 1) == 0\nprint('OK')\n"
@@ -68,11 +70,16 @@ def main() -> int:
     parser.add_argument("--model", default=MODEL, help=f"padrão: {MODEL}")
     parser.add_argument("--api-key-env", default=KEY_VAR, metavar="NAME",
                         help=f"nome da variável com a chave; padrão: {KEY_VAR}")
+    parser.add_argument("--request-timeout-s", type=float, default=REQUEST_TIMEOUT_S, metavar="S",
+                        help=f"timeout por requisição HTTP; padrão: {REQUEST_TIMEOUT_S}")
     args = parser.parse_args()
 
     # O argumento é um NOME. Um valor de chave passado por engano não pode ser ecoado nas mensagens.
     if not KEY_NAME_RE.fullmatch(args.api_key_env):
         print("blocked: --api-key-env must be a variable NAME matching [A-Z_][A-Z0-9_]*. Nothing was run.")
+        return 2
+    if not args.request_timeout_s > 0:
+        print("blocked: --request-timeout-s must be > 0. Nothing was run.")
         return 2
     if not os.environ.get(args.api_key_env):
         print(f"blocked: {args.api_key_env} is not set (or empty) in this environment. Nothing was run.")
@@ -94,7 +101,8 @@ def main() -> int:
     (workspace / "check.py").write_text(CHECK, encoding="utf-8")
     ledger_path = outdir / "ledger.jsonl"
 
-    llm = LLMClient(default_model=args.model, retry=RetryPolicy(max_attempts=3, base_delay_s=2.0))
+    llm = LLMClient(default_model=args.model, retry=RetryPolicy(max_attempts=3, base_delay_s=2.0),
+                    request_timeout_s=args.request_timeout_s)
     with RunLedger(ledger_path) as ledger:
         loop = AgentLoop(llm, ToolExecutor(workspace), ContextManager(keep_recent_observations=10), ledger=ledger)
         result = loop.run(TASK, SYSTEM, max_steps=MAX_STEPS, max_cost_usd=MAX_COST_USD, run_id="smoke-calc-001")

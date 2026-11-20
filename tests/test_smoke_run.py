@@ -66,3 +66,25 @@ def test_help_does_not_need_any_key(monkeypatch, capsys):
     assert info.value.code == 0
     out = capsys.readouterr().out
     assert "--model" in out and "--api-key-env" in out
+
+
+def test_request_timeout_default_fits_container_budget():
+    # 3 tentativas × 30s + backoff 2s + 4s = 96s, abaixo do --timeout-s 300 do container.
+    assert smoke.REQUEST_TIMEOUT_S == 30.0
+    assert 3 * smoke.REQUEST_TIMEOUT_S + 2.0 + 4.0 < 300
+
+
+@pytest.mark.parametrize("value", ["0", "-5", "nan"])
+def test_non_positive_request_timeout_is_refused_before_any_key_check(monkeypatch, tmp_path, capsys, value):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", SECRET)
+    monkeypatch.setattr(sys, "argv", ["dv_smoke_run.py", "--outdir", str(tmp_path), "--request-timeout-s", value])
+    assert smoke.main() == 2
+    out = capsys.readouterr().out
+    assert "--request-timeout-s must be > 0" in out and SECRET not in out
+
+
+def test_help_lists_request_timeout(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["dv_smoke_run.py", "--help"])
+    with pytest.raises(SystemExit):
+        smoke.main()
+    assert "--request-timeout-s" in capsys.readouterr().out

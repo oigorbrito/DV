@@ -391,6 +391,35 @@ def test_ledger_config_snapshot_has_no_environment_values(tmp_path, monkeypatch)
     assert "env_allowlist" in first["config"]
 
 
+def test_ledger_run_started_records_effective_request_timeout(tmp_path):
+    from types import SimpleNamespace
+
+    from dv_harness.llm_client import LLMClient
+
+    submit_raw = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(
+            content=None,
+            tool_calls=[SimpleNamespace(id="s", function=SimpleNamespace(name="submit", arguments='{"answer": "x"}'))],
+        ))],
+        usage=None, model="mock", id="r1",
+    )
+    seen: list[dict] = []
+
+    def fake(**kwargs):
+        seen.append(kwargs)
+        return submit_raw
+
+    llm = LLMClient(default_model="mock", completion_fn=fake, cost_fn=lambda **_: 0.0,
+                    request_timeout_s=42.0, sleep_fn=lambda _s: None)
+    path = tmp_path / "ledger.jsonl"
+    with RunLedger(path) as ledger:
+        make_loop(tmp_path, llm, ledger=ledger).run("t", "s")
+    first = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+    assert first["event"] == "run_started"
+    assert first["config"]["request_timeout_s"] == 42.0
+    assert seen[0]["timeout"] == 42.0  # o valor registrado é o que foi repassado ao litellm
+
+
 def test_interruption_leaves_in_flight_call_and_earlier_accounting(tmp_path):
     path = tmp_path / "ledger.jsonl"
     llm = ScriptedLLM([

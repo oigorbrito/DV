@@ -465,6 +465,7 @@ class AgentLoop:
             "submit_tool": SUBMIT_TOOL_NAME,
             "retry_policy": retry.describe() if retry is not None else None,
             "default_model": getattr(self.llm, "default_model", None),
+            "request_timeout_s": getattr(self.llm, "request_timeout_s", None),
             "keep_recent_observations": self.context.keep_recent_observations,
             "placeholder": self.context.placeholder,
             "max_output_chars": self.executor.max_output_chars,
