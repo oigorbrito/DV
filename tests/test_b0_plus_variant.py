@@ -419,3 +419,302 @@ def test_b0_does_not_reindent_in_indentation_flexible_mode(tmp_path):
     miss = ToolExecutor(tmp_path).edit_file("f.py", "    if x:\n        for i in y:\n            do(i)\n",
                                             "    if x:\n        for i in y:\n            do(i, 2)\n")
     assert miss.ok is False and "not found" in miss.error  # b0 não tem o estágio de indentação
+
+
+# --- motor nivelado, leitura com continuação, saída externa, marcador, schemas e kill ---------
+
+import os  # noqa: E402
+import re as _re  # noqa: E402
+import subprocess as _subprocess  # noqa: E402
+from pathlib import Path as _Path  # noqa: E402
+
+from dv_harness import tool_executor as _te  # noqa: E402
+from dv_harness import variants as _variants  # noqa: E402
+from dv_harness.agent_loop import SUBMIT_SCHEMA as _SUBMIT_SCHEMA  # noqa: E402
+from dv_harness.tool_executor import TOOL_SCHEMAS as _TOOL_SCHEMAS  # noqa: E402
+
+_BS = chr(92)  # barra invertida, construída explicitamente
+
+
+def _apply(text, old, new):
+    return _apply_edit_with_fallback(text, old, new, "f.py")
+
+
+def test_no_op_replacement_raises_value_error():
+    with pytest.raises(ValueError, match="No changes applied"):
+        _apply("a = 1\n", "a = 1\n", "a = 1\n")
+
+
+def test_edit_file_reports_no_op_as_error_in_b0_plus(tmp_path):
+    (tmp_path / "f.py").write_text("a = 1\n", encoding="utf-8")
+    result = _executor(tmp_path).edit_file("f.py", "a = 1\n", "a = 1\n")
+    assert result.ok is False and "No changes applied" in result.error
+    assert (tmp_path / "f.py").read_text(encoding="utf-8") == "a = 1\n"
+
+
+def test_b0_identical_edit_keeps_old_behaviour(tmp_path):  # invariância do b0
+    (tmp_path / "f.py").write_text("a = 1\n", encoding="utf-8")
+    result = ToolExecutor(tmp_path).edit_file("f.py", "a = 1\n", "a = 1\n")
+    assert result.ok is True and result.output == "edited f.py"
+
+
+def test_numbered_prefix_is_stripped_from_old_and_new():
+    updated, _stage, err = _apply("def f():\n    return 1\n",
+                                  "1\tdef f():\n2\t    return 1\n", "1\tdef f():\n2\t    return 2\n")
+    assert err is None and updated == "def f():\n    return 2\n"
+
+
+def test_numbered_prefix_kept_when_file_literally_contains_it():
+    updated, _stage, err = _apply("3\tfoo\n", "3\tfoo\n", "3\tbar\n")
+    assert err is None and updated == "3\tbar\n"
+
+
+def test_numbered_prefix_not_stripped_when_lines_are_mixed():
+    _updated, _stage, err = _apply("x = 1\ny = 2\n", "1\tx = 1\ny = 2\n", "x = 9\n")
+    assert err is not None and "not found" in err.error
+
+
+def test_trimmed_boundary_drops_extra_blank_edges():
+    updated, stage, err = _apply("x = 1\ny = 2\n", "\nx = 1\n\n", "x = 9\n")
+    assert err is None and stage == "trimmed_boundary"
+    assert updated == "x = 9\ny = 2\n"
+
+
+def test_escape_normalized_matches_double_escaped_block():
+    updated, stage, err = _apply("a = 1\nb = 2\n", "a = 1" + _BS + "nb = 2" + _BS + "n", "a = 9\n")
+    assert err is None and stage == "escape_normalized"
+    assert updated == "a = 9\n"
+
+
+def test_escape_normalized_unescapes_new_text_too():
+    updated, stage, err = _apply("x = 1\n", "x = 1" + _BS + "n", "x = 2" + _BS + "n")
+    assert err is None and stage == "escape_normalized"
+    assert updated == "x = 2\n"
+
+
+def test_unicode_curly_quotes_match_ascii_line():
+    updated, stage, err = _apply('print("hello")\nkeep "ok"\n', "print(\u201chello\u201d)\n", 'print("bye")\n')
+    assert err is None and stage == "unicode_normalized"
+    assert updated == 'print("bye")\nkeep "ok"\n'
+
+
+def test_unicode_nbsp_and_dashes_match():
+    updated, stage, err = _apply("a =\u00a01\n", "a = 1\n", "a = 2\n")
+    assert err is None and stage == "unicode_normalized" and updated == "a = 2\n"
+    updated2, stage2, err2 = _apply("x = a\u2013b\n", "x = a-b\n", "x = c\n")
+    assert err2 is None and stage2 == "unicode_normalized" and updated2 == "x = c\n"
+
+
+def test_unicode_stage_preserves_untouched_line_bytes():
+    updated, _stage, err = _apply("keep \u201cx\u201d\nprint(\u201chi\u201d)\n", 'print("hi")\n', 'print("bye")\n')
+    assert err is None and updated == "keep \u201cx\u201d\nprint(\"bye\")\n"
+
+
+_BLOCK_FILE = "def f():\n    a = 1\n    b = 2\n    c = 3\n    d = 4\n    e = 5\n    return a\n"
+
+
+def test_block_anchor_accepts_block_with_one_divergent_middle_line():
+    old = "def f():\n    a = 1\n    b = 2\n    c = 99 # agent comment\n    d = 4\n    e = 5\n    return a\n"
+    updated, stage, err = _apply(_BLOCK_FILE, old, "def f():\n    return 0\n")
+    assert err is None and stage == "block_anchor"
+    assert updated == "def f():\n    return 0\n"
+
+
+def test_block_anchor_rejects_similarity_below_threshold():
+    # similaridade média das 5 linhas internas: (1 + 0 + 0 + 1 + 1) / 5 = 0.6 < 0.65
+    old = "def f():\n    a = 1\n    zzzzzzzzzz\n    qqqqqqqqqq\n    d = 4\n    e = 5\n    return a\n"
+    _updated, _stage, err = _apply(_BLOCK_FILE, old, "def f():\n    return 0\n")
+    assert err is not None and "not found" in err.error
+
+
+def test_block_anchor_rejects_ambiguous_blocks():
+    block = "def f():\n    a = 1\n    b = 2\n    c = 3\n    return a\n"
+    old = "def f():\n    a = 1\n    b = 22\n    c = 3\n    return a\n"
+    updated, stage, err = _apply(block + "\n" + block, old, "def f():\n    return 0\n")
+    assert updated is None and stage == "block_anchor"
+    assert "ambiguous" in err.error and "2 matches" in err.error
+
+
+def test_block_anchor_needs_at_least_three_lines():
+    _updated, _stage, err = _apply("a\nb\n", "a\nX\n", "Y\n")
+    assert err is not None and "not found" in err.error
+
+
+def test_block_anchor_threshold_is_opencode_value():
+    assert _te.BLOCK_ANCHOR_THRESHOLD == 0.65
+
+
+def test_read_file_truncation_names_continuation_line(tmp_path):
+    lines = [f"line {i:03d} " + "x" * 40 for i in range(1, 301)]
+    (tmp_path / "big.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    ex = _executor(tmp_path, max_output_chars=2000)
+    result = ex.read_file("big.txt")
+    assert result.truncated is True
+    match = _re.search(r"showing lines 1-(\d+) of 300\. Use start_line=(\d+) to continue\.", result.output)
+    assert match is not None
+    shown_end = int(match.group(1))
+    assert int(match.group(2)) == shown_end + 1
+    follow = ex.read_file("big.txt", start_line=shown_end + 1)
+    assert follow.output.split("\n")[0].startswith(f"{shown_end + 1}\t")
+
+
+def test_read_file_b0_has_no_continuation_hint(tmp_path):  # invariância do b0
+    lines = [f"line {i:03d} " + "x" * 40 for i in range(1, 301)]
+    (tmp_path / "big.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    result = ToolExecutor(tmp_path, max_output_chars=2000).read_file("big.txt")
+    assert "Truncated:" not in result.output and "caracteres omitidos" in result.output
+
+
+def test_read_file_without_truncation_has_no_hint(tmp_path):
+    (tmp_path / "small.txt").write_text("a\nb\n", encoding="utf-8")
+    result = _executor(tmp_path).read_file("small.txt")
+    assert result.truncated is False and "Truncated" not in result.output
+
+
+def test_full_output_saved_outside_workspace_and_marker_points_to_it(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    logs = tmp_path / "bash_logs"
+    ex = ToolExecutor(ws, max_output_chars=300, harness_variant=B0_PLUS, full_output_dir=logs)
+    result = ex.run_bash(f'"{sys.executable}" -c "print(\'x\' * 2000)"')
+    assert result.truncated is True and "[Full output saved to: " in result.output
+    saved_path = _Path(result.output.split("[Full output saved to: ")[1].split("]")[0])
+    assert saved_path.read_text(encoding="utf-8").count("x") == 2000
+    assert saved_path.resolve().is_relative_to(logs.resolve())
+    assert list(ws.iterdir()) == []  # o workspace não recebe nenhum arquivo
+    assert result.raw_output.count("x") == 2000
+
+
+def test_full_output_dir_inside_workspace_is_refused(tmp_path):
+    with pytest.raises(ValueError):
+        ToolExecutor(tmp_path, harness_variant=B0_PLUS, full_output_dir=tmp_path / "sub")
+
+
+def test_b0_run_bash_never_saves_externally(tmp_path):  # invariância do b0
+    logs = tmp_path / "logs"
+    ex = ToolExecutor(tmp_path / "ws", max_output_chars=300, full_output_dir=logs)
+    (tmp_path / "ws").mkdir()
+    result = ex.run_bash(f'"{sys.executable}" -c "print(\'x\' * 2000)"')
+    assert "Full output saved to" not in result.output and not logs.exists()
+
+
+def test_run_bash_empty_output_gets_marker_in_b0_plus(tmp_path):
+    cmd = f'"{sys.executable}" -c "pass"'
+    llm = ScriptedLLM([make_response(calls=[call("r1", "run_bash", {"command": cmd})]),
+                       make_response(calls=[submit("s1", "done")])])
+    AgentLoop(llm, _executor(tmp_path), ContextManager(keep_recent_observations=10, harness_variant=B0_PLUS),
+              harness_variant=B0_PLUS).run("t", "s", max_steps=8)
+    tool_messages = [m for m in llm.calls[-1]["messages"] if m.get("role") == "tool"]
+    assert tool_messages[0]["content"] == "(no output)"
+
+
+def test_run_bash_empty_output_stays_empty_in_b0(tmp_path):  # invariância do b0
+    cmd = f'"{sys.executable}" -c "pass"'
+    llm = ScriptedLLM([make_response(calls=[call("r1", "run_bash", {"command": cmd})]),
+                       make_response(calls=[submit("s1", "done")])])
+    AgentLoop(llm, ToolExecutor(tmp_path), ContextManager()).run("t", "s", max_steps=8)
+    tool_messages = [m for m in llm.calls[-1]["messages"] if m.get("role") == "tool"]
+    assert tool_messages[0]["content"] == ""
+
+
+def test_b0_schemas_and_prompt_are_unchanged():
+    assert _te.get_tool_schemas("b0") is _TOOL_SCHEMAS
+    assert _variants.build_system_prompt("BASE", "b0") == "BASE"
+    assert "WITHOUT the line-number prefix" not in json.dumps(_TOOL_SCHEMAS)
+
+
+def test_b0_plus_schemas_carry_usage_rules_and_keep_parameters():
+    enriched = _te.get_tool_schemas("b0_plus")
+    descriptions = {s["function"]["name"]: s["function"]["description"] for s in enriched}
+    assert "WITHOUT the line-number prefix" in descriptions["edit_file"]
+    assert "prefer edit_file" in descriptions["write_file"]
+    assert "cat, sed" in descriptions["run_bash"]
+    assert "start_line" in descriptions["read_file"]
+    for before, after in zip(_TOOL_SCHEMAS, enriched, strict=True):  # só a descrição muda
+        assert before["function"]["name"] == after["function"]["name"]
+        assert before["function"]["parameters"] == after["function"]["parameters"]
+
+
+def test_b0_plus_prompt_adds_guidelines_on_top_of_base():
+    text = _variants.build_system_prompt("BASE", "b0_plus")
+    assert text.startswith("BASE") and "Tool guidelines" in text and "cat, sed or heredocs" in text
+
+
+def test_agent_loop_sends_variant_prompt_and_schemas(tmp_path):
+    llm = ScriptedLLM([make_response(calls=[submit("s", "x")])])
+    AgentLoop(llm, _executor(tmp_path), ContextManager(harness_variant=B0_PLUS),
+              harness_variant=B0_PLUS).run("t", "BASE", max_steps=3)
+    assert "Tool guidelines" in llm.calls[0]["messages"][0]["content"]
+    edit_desc = [t["function"]["description"] for t in llm.calls[0]["tools"] if t["function"]["name"] == "edit_file"]
+    assert "WITHOUT the line-number prefix" in edit_desc[0]
+
+
+def test_agent_loop_b0_sends_unchanged_prompt_and_schemas(tmp_path):  # invariância do b0
+    llm = ScriptedLLM([make_response(calls=[submit("s", "x")])])
+    AgentLoop(llm, ToolExecutor(tmp_path), ContextManager()).run("t", "BASE", max_steps=3)
+    assert llm.calls[0]["messages"][0]["content"] == "BASE"
+    assert llm.calls[0]["tools"] == [*_TOOL_SCHEMAS, _SUBMIT_SCHEMA]
+
+
+def test_kill_group_uses_taskkill_tree_on_windows(monkeypatch):
+    calls = []
+
+    class FakeProc:
+        pid = 4242
+
+        def kill(self):
+            calls.append(("kill",))
+
+    monkeypatch.setattr(_te, "_is_posix", lambda: False)
+    monkeypatch.setattr(_te.subprocess, "run", lambda argv, **kw: calls.append(("run", argv)))
+    _te._kill_group(FakeProc())
+    assert ("run", ["taskkill", "/F", "/T", "/PID", "4242"]) in calls
+    assert ("kill",) in calls
+
+
+class _Stream:
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+def test_communicate_after_kill_is_bounded_and_closes_pipes():
+    assert _te.POST_KILL_TIMEOUT_S == 5
+
+    class StuckProc:
+        def __init__(self):
+            self.stdout = _Stream()
+            self.stderr = _Stream()
+
+        def communicate(self, timeout=None):
+            if timeout is None:
+                raise AssertionError("unbounded communicate after kill")
+            raise _subprocess.TimeoutExpired(cmd="x", timeout=timeout)
+
+    proc = StuckProc()
+    assert _te._communicate_after_kill(proc) == (b"", b"")
+    assert proc.stdout.closed and proc.stderr.closed
+
+
+def test_communicate_after_kill_returns_output_when_it_finishes():
+    class DoneProc:
+        stdout = None
+        stderr = None
+
+        def communicate(self, timeout=None):
+            return (b"ok", b"")
+
+    assert _te._communicate_after_kill(DoneProc()) == (b"ok", b"")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="grupo de processos é POSIX")
+def test_timeout_with_grandchild_holding_pipes_returns_bounded(tmp_path):
+    import time as _time
+
+    ex = ToolExecutor(tmp_path)
+    started = _time.monotonic()
+    result = ex.run_bash("sleep 30 & sleep 30", timeout=1)
+    assert result.timed_out is True
+    assert _time.monotonic() - started < 20  # sem o limite, o neto segurando o pipe travaria aqui

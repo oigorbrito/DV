@@ -41,6 +41,22 @@ REFERENCE_PROVENANCE: dict[str, dict[str, object]] = {
 }
 
 
+B0_PLUS_GUIDELINES: tuple[str, ...] = (
+    "Do not copy the line-number prefix (N<TAB>) from read_file output into edit_file old_text.",
+    "Prefer edit_file over write_file to change an existing file; use write_file only for new files or complete rewrites.",
+    "Use read_file and edit_file instead of cat, sed or heredocs in run_bash.",
+    "When read_file reports truncation, continue with start_line set to the line number it names.",
+)
+
+
+def build_system_prompt(base: str, variant: str) -> str:
+    """Prompt de sistema da variante. b0: o texto base, sem alteração. b0_plus: acrescenta diretrizes de uso."""
+    check_variant(variant)
+    if variant != VARIANT_B0_PLUS:
+        return base
+    return base + "\n\nTool guidelines:\n" + "\n".join(f"- {line}" for line in B0_PLUS_GUIDELINES)
+
+
 def check_variant(variant: str) -> str:
     """Valida o nome da variante. Levanta ``ValueError`` para nomes desconhecidos."""
     if variant not in HARNESS_VARIANTS:

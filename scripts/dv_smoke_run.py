@@ -107,7 +107,8 @@ def main() -> int:
                     request_timeout_s=args.request_timeout_s)
     with RunLedger(ledger_path) as ledger:
         variant = args.harness_variant
-        loop = AgentLoop(llm, ToolExecutor(workspace, harness_variant=variant),
+        bash_logs = outdir / "bash_logs" if variant == "b0_plus" else None  # fora do workspace
+        loop = AgentLoop(llm, ToolExecutor(workspace, harness_variant=variant, full_output_dir=bash_logs),
                          ContextManager(keep_recent_observations=10, harness_variant=variant), ledger=ledger,
                          harness_variant=variant)
         result = loop.run(TASK, SYSTEM, max_steps=MAX_STEPS, max_cost_usd=MAX_COST_USD, run_id="smoke-calc-001")

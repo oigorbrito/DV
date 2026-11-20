@@ -43,11 +43,15 @@ Atribuições empíricas
 
 from __future__ import annotations
 
+import contextlib
+import copy
 import difflib
+import hashlib
 import os
 import re
 import signal
 import subprocess
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -202,42 +206,222 @@ def _reindent_block(new: str, target: int) -> str:
     return "".join(out)
 
 
-def _apply_edit_with_fallback(text: str, old_text: str, new_text: str, path: str
-                              ) -> tuple[str | None, str | None, ToolResult | None]:
-    """Substituição única em 3 estágios (b0_plus): exact, line_trimmed, indentation_flexible.
+# --- edição nivelada (b0_plus): cadeia de 7 estágios, cada um exigindo match único ----------
+# Referências: Pi edit-diff.ts (normalizeForFuzzyMatch, preservação de linhas não tocadas);
+# OpenCode edit.ts (EscapeNormalized, TrimmedBoundary, BlockAnchor com limiar 0.65 e guarda de desproporção).
 
-    Cada estágio exige exatamente uma ocorrência. Ambiguidade em qualquer estágio é erro imediato,
-    sem avançar. Só avança quando o estágio não acha nenhuma ocorrência. Devolve
-    ``(texto_novo, estágio, erro)``. A terminação de linha (CRLF ou LF) e a presença de quebra
-    final do bloco original são preservadas.
-    """
-    pure_crlf, body, old, new = _crlf_normalised(text, old_text, new_text)
+BLOCK_ANCHOR_THRESHOLD = 0.65  # OpenCode edit.ts:220
+_NUMBERED_PREFIX_RE = re.compile(r"^\d+\t")  # prefixo "N<TAB>" que read_file devolve
+_ESCAPE_RE = re.compile(r"\\([ntr\"'\\])")
+_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "'": "'", "\\": "\\"}
+_UNICODE_MAP = {
+    **{ord(c): "'" for c in "\u2018\u2019\u201a\u201b"},
+    **{ord(c): '"' for c in "\u201c\u201d\u201e\u201f"},
+    **{ord(c): "-" for c in "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"},
+    **{ord(c): " " for c in "\u00a0\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u202f\u205f\u3000"},
+}
 
+
+class _AmbiguousMatch(Exception):
+    """Mais de um match em um estágio: erro imediato, sem avançar para o próximo estágio."""
+
+    def __init__(self, count: int) -> None:
+        super().__init__(count)
+        self.count = count
+
+
+def _unescape(text: str) -> str:
+    return _ESCAPE_RE.sub(lambda m: _ESCAPES[m.group(1)], text)
+
+
+def _norm_unicode(line: str) -> str:
+    """NFKC, aspas curvas, traços Unicode e espaços especiais -> ASCII; sem espaço final (Pi)."""
+    return unicodedata.normalize("NFKC", line).translate(_UNICODE_MAP).rstrip()
+
+
+def _levenshtein(a: str, b: str) -> int:
+    previous = list(range(len(b) + 1))
+    for i, ca in enumerate(a, start=1):
+        current = [i]
+        for j, cb in enumerate(b, start=1):
+            current.append(min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (ca != cb)))
+        previous = current
+    return previous[-1]
+
+
+def _line_similarity(a: str, b: str) -> float:
+    if a == b:
+        return 1.0
+    return 1.0 - _levenshtein(a, b) / max(len(a), len(b))
+
+
+def _trim_blank_edges(text: str) -> str:
+    elems = _elements(text)
+    start, end = 0, len(elems)
+    while start < end and not _strip_terminator(elems[start]).strip():
+        start += 1
+    while end > start and not _strip_terminator(elems[end - 1]).strip():
+        end -= 1
+    return "".join(elems[start:end])
+
+
+def _strip_numbered(body: str, old: str, new: str) -> tuple[str, str]:
+    """Remove o prefixo ``N<TAB>`` de old (e de new, se também vier numerado). Não mexe se o arquivo tem o prefixo."""
+    old_lines = [line for line in old.split("\n") if line.strip()]
+    if not old_lines or not all(_NUMBERED_PREFIX_RE.match(line) for line in old_lines):
+        return old, new
+    if old in body:  # o arquivo contém o texto literal com prefixo: não é acidente
+        return old, new
+
+    def strip(text: str) -> str:
+        return "\n".join(_NUMBERED_PREFIX_RE.sub("", line) for line in text.split("\n"))
+
+    new_lines = [line for line in new.split("\n") if line.strip()]
+    if new_lines and all(_NUMBERED_PREFIX_RE.match(line) for line in new_lines):
+        return strip(old), strip(new)
+    return strip(old), new
+
+
+def _lines_stage(body: str, old: str, new: str, norm: Any, *, reindent: bool = False) -> str | None:
+    windows = _line_windows(body, old, norm)
+    if len(windows) > 1:
+        raise _AmbiguousMatch(len(windows))
+    if not windows:
+        return None
+    i, k = windows[0]
+    elems = _elements(body)
+    block = new
+    if reindent:
+        target = _min_indent([_strip_terminator(e) for e in elems[i:i + k]])
+        if target is not None:
+            block = _reindent_block(new, target)
+    ends_nl = elems[i + k - 1].endswith("\n")
+    return "".join(elems[:i]) + _fit_terminator(block, ends_nl) + "".join(elems[i + k:])
+
+
+def _exact_stage(body: str, old: str, new: str) -> str | None:
+    if not old:
+        return None
     count = body.count(old)
     if count > 1:
-        return None, "exact", _ambiguous(count, "exact", path)
-    if count == 1:
-        updated, stage = body.replace(old, _fit_terminator(new, old.endswith("\n")), 1), "exact"
-    else:
-        updated = stage = None
-        for name, norm in (("line_trimmed", str.rstrip), ("indentation_flexible", str.strip)):
-            windows = _line_windows(body, old, norm)
-            if len(windows) > 1:
-                return None, name, _ambiguous(len(windows), name, path)
-            if windows:
-                i, k = windows[0]
-                elems = _elements(body)
-                ends_nl = elems[i + k - 1].endswith("\n")
-                target = _min_indent([_strip_terminator(e) for e in elems[i:i + k]])
-                block = _reindent_block(new, target) if name == "indentation_flexible" and target is not None else new
-                updated = "".join(elems[:i]) + _fit_terminator(block, ends_nl) + "".join(elems[i + k:])
-                stage = name
+        raise _AmbiguousMatch(count)
+    if count == 0:
+        return None
+    return body.replace(old, _fit_terminator(new, old.endswith("\n")), 1)
+
+
+def _line_trimmed_stage(body: str, old: str, new: str) -> str | None:
+    return _lines_stage(body, old, new, str.rstrip)
+
+
+def _trimmed_boundary_stage(body: str, old: str, new: str) -> str | None:
+    trimmed = _trim_blank_edges(old)
+    if trimmed == old or not trimmed:
+        return None
+    return _lines_stage(body, trimmed, new, str.rstrip)
+
+
+def _indentation_stage(body: str, old: str, new: str) -> str | None:
+    return _lines_stage(body, old, new, str.strip, reindent=True)
+
+
+def _escape_stage(body: str, old: str, new: str) -> str | None:
+    un_old = _unescape(old)
+    if un_old == old:
+        return None
+    un_new = _unescape(new)  # o modelo escapou o bloco inteiro: new também vem escapado
+    for stage in (_exact_stage, _line_trimmed_stage):
+        hit = stage(body, un_old, un_new)
+        if hit is not None:
+            return hit
+    return None
+
+
+def _unicode_stage(body: str, old: str, new: str) -> str | None:
+    return _lines_stage(body, old, new, _norm_unicode)
+
+
+def _block_similarity(body_lines: list[str], old_lines: list[str]) -> float:
+    """Média da similaridade das linhas internas, alinhadas por índice (OpenCode BlockAnchor)."""
+    middle = min(len(old_lines), len(body_lines)) - 2
+    total = sum(_line_similarity(body_lines[j].strip(), old_lines[j].strip()) for j in range(1, middle + 1))
+    return total / middle
+
+
+def _block_anchor_candidates(body: str, old: str) -> list[tuple[int, int]]:
+    old_lines = [_strip_terminator(e) for e in _elements(old)]
+    k = len(old_lines)
+    body_lines = [_strip_terminator(e) for e in _elements(body)]
+    first, last = old_lines[0].strip(), old_lines[-1].strip()
+    delta = max(1, k // 4)  # floor(0.25 * k), como OpenCode
+    found: list[tuple[int, int]] = []
+    for i in range(len(body_lines)):
+        if body_lines[i].strip() != first:
+            continue
+        best: tuple[float, int] | None = None
+        for size in range(max(3, k - delta), k + delta + 1):
+            j = i + size - 1
+            if j >= len(body_lines):
                 break
-        if updated is None:
-            return None, None, ToolResult(ok=False, error=f"old_text not found in {path}")
-    if pure_crlf:
-        updated = updated.replace("\n", "\r\n")
-    return updated, stage, None
+            if body_lines[j].strip() != last or size >= max(k + 3, 2 * k):  # guarda de desproporção
+                continue
+            sim = _block_similarity(body_lines[i:i + size], old_lines)
+            if sim >= BLOCK_ANCHOR_THRESHOLD and (best is None or sim > best[0]):
+                best = (sim, size)
+        if best is not None:
+            found.append((i, best[1]))
+    return found
+
+
+def _block_anchor_stage(body: str, old: str, new: str) -> str | None:
+    if len(_elements(old)) < 3:
+        return None
+    found = _block_anchor_candidates(body, old)
+    if len(found) > 1:
+        raise _AmbiguousMatch(len(found))
+    if not found:
+        return None
+    i, size = found[0]
+    elems = _elements(body)
+    target = _min_indent([_strip_terminator(e) for e in elems[i:i + size]])
+    block = _reindent_block(new, target) if target is not None else new
+    ends_nl = elems[i + size - 1].endswith("\n")
+    return "".join(elems[:i]) + _fit_terminator(block, ends_nl) + "".join(elems[i + size:])
+
+
+_STAGES: tuple[tuple[str, Any], ...] = (
+    ("exact", _exact_stage),
+    ("line_trimmed", _line_trimmed_stage),
+    ("trimmed_boundary", _trimmed_boundary_stage),
+    ("indentation_flexible", _indentation_stage),
+    ("escape_normalized", _escape_stage),
+    ("unicode_normalized", _unicode_stage),
+    ("block_anchor", _block_anchor_stage),
+)
+
+
+def _apply_edit_with_fallback(text: str, old_text: str, new_text: str, path: str
+                              ) -> tuple[str | None, str | None, ToolResult | None]:
+    """b0_plus: cadeia de 7 estágios. Cada estágio exige exatamente um match.
+
+    Devolve ``(texto_novo, estágio, erro)``. Ambiguidade em um estágio é erro imediato. Levanta
+    ``ValueError`` se o resultado for idêntico ao original (no-op). Terminação de linha (CRLF ou LF)
+    e a presença ou ausência de quebra final do bloco original são preservadas.
+    """
+    pure_crlf, body, old, new = _crlf_normalised(text, old_text, new_text)
+    old, new = _strip_numbered(body, old, new)
+    for name, stage in _STAGES:
+        try:
+            updated = stage(body, old, new)
+        except _AmbiguousMatch as amb:
+            return None, name, _ambiguous(amb.count, name, path)
+        if updated is not None:
+            if pure_crlf:
+                updated = updated.replace("\n", "\r\n")
+            if updated == text:
+                raise ValueError("No changes applied: replacement produces identical content.")
+            return updated, name, None
+    return None, None, ToolResult(ok=False, error=f"old_text not found in {path}")
 
 
 def _ambiguous(count: int, stage: str, path: str) -> ToolResult:
@@ -282,8 +466,16 @@ class ToolExecutor:
         *,
         max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS,
         harness_variant: str = "b0",
+        full_output_dir: str | os.PathLike[str] | None = None,
     ) -> None:
         self.root = (Path(root) if root is not None else Path.cwd()).resolve()
+        if full_output_dir is not None:
+            external = Path(full_output_dir).resolve()
+            if external == self.root or external.is_relative_to(self.root):
+                raise ValueError("full_output_dir must be outside the workspace root")
+            self.full_output_dir: Path | None = external
+        else:
+            self.full_output_dir = None
         self.max_output_chars = max_output_chars
         self.harness_variant = check_variant(harness_variant)
 
@@ -349,8 +541,14 @@ class ToolExecutor:
         if first > len(lines) and lines:
             return ToolResult(ok=False, error=f"start_line {start_line} beyond end of file ({len(lines)} lines)")
         numbered = "\n".join(f"{i + 1}\t{lines[i]}" for i in range(first, last))
-        out, truncated = truncate_output(numbered, self.max_output_chars)
+        out, truncated = self._read_output(numbered, first + 1, len(lines))
         return ToolResult(ok=True, output=out, truncated=truncated, raw_output=numbered)
+
+    def _read_output(self, numbered: str, start: int, total: int) -> tuple[str, bool]:
+        """b0: cabeça e cauda por caracteres. b0_plus: cabeça com pista de continuação (start_line)."""
+        if self.harness_variant == VARIANT_B0_PLUS:
+            return _window_with_continuation(numbered, start, total, self.max_output_chars)
+        return truncate_output(numbered, self.max_output_chars)
 
     # --- write_file ----------------------------------------------------------
 
@@ -412,7 +610,10 @@ class ToolExecutor:
     def _replace_for_variant(self, text: str, old_text: str, new_text: str, path: str) -> tuple[str | None, ToolResult | None]:
         """b0: substituição única literal. b0_plus: fallback de 3 estágios com unicidade estrita."""
         if self.harness_variant == VARIANT_B0_PLUS:
-            updated, _stage, problem = _apply_edit_with_fallback(text, old_text, new_text, path)
+            try:
+                updated, _stage, problem = _apply_edit_with_fallback(text, old_text, new_text, path)
+            except ValueError as exc:  # no-op: nada a aplicar
+                return None, ToolResult(ok=False, error=str(exc))
             return updated, problem
         return _apply_unique_replacement(text, old_text, new_text, path)
 
@@ -425,8 +626,20 @@ class ToolExecutor:
     def _truncate_command_output(self, text: str) -> tuple[str, bool]:
         """b0: início e fim 50/50. b0_plus: cauda priorizada (20/80). ``raw_output`` nunca é truncado."""
         if self.harness_variant == VARIANT_B0_PLUS:
-            return truncate_tail_priority(text, self.max_output_chars)
+            out, truncated = truncate_tail_priority(text, self.max_output_chars)
+            if truncated and self.full_output_dir is not None:
+                out = f"{out}\n[Full output saved to: {self._save_full_output(text)}]"
+            return out, truncated
         return truncate_output(text, self.max_output_chars)
+
+    def _save_full_output(self, text: str) -> str:
+        """Grava a saída completa FORA do workspace (nunca altera diffs nem oráculos). Devolve o caminho."""
+        assert self.full_output_dir is not None
+        self.full_output_dir.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+        target = self.full_output_dir / f"bash-{digest}.txt"
+        target.write_bytes(text.encode("utf-8"))
+        return str(target)
 
     def run_bash(
         self,
@@ -461,7 +674,7 @@ class ToolExecutor:
             stdout, stderr = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
             _kill_group(proc)
-            stdout, stderr = proc.communicate()
+            stdout, stderr = _communicate_after_kill(proc)
             full = _decode(stdout) + _decode(stderr)
             out, truncated = self._truncate_command_output(full)
             return ToolResult(
@@ -510,19 +723,43 @@ def _apply_unique_replacement(text: str, old_text: str, new_text: str, path: str
         updated = updated.replace("\n", "\r\n")
     return updated, None
 
-def _kill_group(proc: subprocess.Popen[bytes]) -> None:
-    """Mata o grupo de processos do comando. Ignora se já terminou.
+POST_KILL_TIMEOUT_S = 5  # limite do communicate depois do kill (um neto pode segurar os pipes)
 
-    POSIX: mata o grupo inteiro (``start_new_session``). Fora do POSIX não há
-    ``killpg``; cai para ``proc.kill()``, que mata só o shell (netos podem sobreviver).
+
+def _is_posix() -> bool:
+    return os.name == "posix"
+
+
+def _kill_group(proc: subprocess.Popen[bytes]) -> None:
+    """Mata a árvore de processos do comando. Ignora se já terminou.
+
+    POSIX: mata o grupo inteiro (``start_new_session``). Windows: ``taskkill /F /T`` mata a árvore;
+    sem ele só o shell morre e processos netos podem continuar segurando stdout e stderr.
     """
-    if os.name == "posix":
+    if _is_posix():
         try:
             os.killpg(proc.pid, signal.SIGKILL)
             return
         except (ProcessLookupError, PermissionError):
             pass
-    proc.kill()
+    else:
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True,
+                           check=False, timeout=10)
+    with contextlib.suppress(OSError):
+        proc.kill()
+
+
+def _communicate_after_kill(proc: subprocess.Popen[bytes]) -> tuple[bytes, bytes]:
+    """Lê o que sobrou depois do kill, com limite. Se um neto ainda segura os pipes, fecha e segue."""
+    try:
+        return proc.communicate(timeout=POST_KILL_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        for stream in (proc.stdout, proc.stderr):
+            if stream is not None:
+                with contextlib.suppress(OSError, ValueError):
+                    stream.close()
+        return b"", b""
 
 
 def _decode(data: bytes | str | None) -> str:
@@ -599,3 +836,68 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
 ]
+
+
+# --- variante b0_plus: schemas com regras de uso, leitura com continuação --------------------
+
+B0_PLUS_READ_MAX_LINES = 2000  # mesmo teto de linhas do Pi/OpenCode (read.txt:5)
+_CONTINUATION_RESERVE = 160  # caracteres reservados para a pista de continuação
+
+_B0_PLUS_DESCRIPTIONS: dict[str, str] = {
+    "read_file": (
+        "Read a UTF-8 text file. Output lines are numbered as N<TAB>text; the number is not part of the file, "
+        "so never copy it into edit_file old_text. Use start_line/end_line (1-based, inclusive) to read a range. "
+        "If the output says it is truncated, continue with start_line set to the line number it names."
+    ),
+    "write_file": (
+        "Create a new UTF-8 text file or completely rewrite one. Parent directories are created. "
+        "To change an existing file, prefer edit_file."
+    ),
+    "edit_file": (
+        "Replace one occurrence of old_text with new_text in a file. Copy old_text exactly from the file, "
+        "WITHOUT the line-number prefix that read_file prints. It must match exactly one place: include enough "
+        "surrounding lines to make it unique. Prefer this over write_file for existing files. Fails if old_text "
+        "is missing, ambiguous, or the result would be identical to the original."
+    ),
+    "run_bash": (
+        "Run a shell command in a new, stateless shell. Output is truncated when long; when it is, the full output "
+        "is saved to a file outside the workspace and its path is given. To read or edit files, prefer read_file "
+        "and edit_file over cat, sed or heredocs."
+    ),
+}
+
+
+def get_tool_schemas(variant: str = "b0") -> list[dict[str, Any]]:
+    """Schemas enviados ao modelo. b0: os atuais, sem alteração. b0_plus: descrições com regras de uso."""
+    check_variant(variant)
+    if variant != VARIANT_B0_PLUS:
+        return TOOL_SCHEMAS
+    schemas = copy.deepcopy(TOOL_SCHEMAS)
+    for schema in schemas:
+        schema["function"]["description"] = _B0_PLUS_DESCRIPTIONS[schema["function"]["name"]]
+    return schemas
+
+
+def _window_with_continuation(numbered: str, start: int, total: int, limit: int) -> tuple[str, bool]:
+    """Janela de leitura (b0_plus): cabeça até o teto de linhas ou de caracteres, com pista de continuação.
+
+    ``start`` é a primeira linha pedida (1-based). A pista nomeia as linhas mostradas e o próximo
+    ``start_line``, para o modelo continuar sem adivinhar. Sem truncamento, devolve o texto intacto.
+    """
+    lines = numbered.split("\n") if numbered else []
+    budget = max(0, limit - _CONTINUATION_RESERVE)
+    shown: list[str] = []
+    used = 0
+    for line in lines[:B0_PLUS_READ_MAX_LINES]:
+        cost = len(line) + (1 if shown else 0)
+        if used + cost > budget:
+            break
+        shown.append(line)
+        used += cost
+    if not shown and lines:  # uma linha sozinha maior que o orçamento: mostra o início dela
+        shown = [lines[0][:budget]]
+    if len(shown) == len(lines):
+        return numbered, False
+    end = start + len(shown) - 1
+    hint = f"[Truncated: showing lines {start}-{end} of {total}. Use start_line={end + 1} to continue.]"
+    return "\n".join(shown) + "\n" + hint, True

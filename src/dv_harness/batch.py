@@ -50,7 +50,7 @@ from dv_harness.agent_loop import AgentLoop
 from dv_harness.context_manager import ContextManager
 from dv_harness.ledger import RunLedger, reconcile
 from dv_harness.tool_executor import ToolExecutor
-from dv_harness.variants import DEFAULT_VARIANT, REFERENCE_PROVENANCE, check_variant
+from dv_harness.variants import DEFAULT_VARIANT, REFERENCE_PROVENANCE, VARIANT_B0_PLUS, check_variant
 
 BATCH_SCHEMA = "dv-batch-summary-v1"
 MANIFEST_SCHEMA = "dv-batch-manifest-v1"
@@ -442,7 +442,9 @@ def run_one(task: BatchTask, run_dir: Path, llm: Any, config: BatchConfig, *,
 
     with RunLedger(run_dir / "ledger.jsonl") as ledger:
         variant = check_variant(config.harness_variant)
-        loop = AgentLoop(llm, ToolExecutor(workspace, harness_variant=variant),
+        # Saída completa de run_bash (b0_plus) fica em run_dir/bash_logs, fora do workspace.
+        bash_logs = run_dir / "bash_logs" if variant == VARIANT_B0_PLUS else None
+        loop = AgentLoop(llm, ToolExecutor(workspace, harness_variant=variant, full_output_dir=bash_logs),
                          ContextManager(keep_recent_observations=10, harness_variant=variant), ledger=ledger,
                          harness_variant=variant)
         result = loop.run(task.statement, SYSTEM_PROMPT, max_steps=config.max_steps,

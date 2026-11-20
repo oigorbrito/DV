@@ -67,7 +67,13 @@ from typing import Any
 from dv_harness import protocol
 from dv_harness.context_manager import ContextManager
 from dv_harness.ledger import RunLedger
-from dv_harness.variants import DOOM_LOOP_THRESHOLD, REFERENCE_PROVENANCE, VARIANT_B0_PLUS, check_variant
+from dv_harness.variants import (
+    DOOM_LOOP_THRESHOLD,
+    REFERENCE_PROVENANCE,
+    VARIANT_B0_PLUS,
+    build_system_prompt,
+    check_variant,
+)
 from dv_harness.llm_client import (
     PRICING_SOURCE,
     AttemptRecord,
@@ -75,7 +81,7 @@ from dv_harness.llm_client import (
     LLMResponse,
     ToolCall,
 )
-from dv_harness.tool_executor import ENV_ALLOWLIST, TOOL_SCHEMAS, ToolExecutor, ToolResult
+from dv_harness.tool_executor import ENV_ALLOWLIST, TOOL_SCHEMAS, ToolExecutor, ToolResult, get_tool_schemas
 
 # Re-exports de estado (compatibilidade com o módulo anterior).
 STATUS_COMPLETED = protocol.STATUS_COMPLETED
@@ -331,6 +337,8 @@ class AgentLoop:
         self.context = context
         self.ledger = ledger
         self.error_limit = error_limit
+        # b0: schemas idênticos aos atuais. b0_plus: descrições com regras de uso (get_tool_schemas).
+        self._request_tools: list[dict[str, Any]] = [*get_tool_schemas(self.harness_variant), SUBMIT_SCHEMA]
 
     def run(
         self,
@@ -343,6 +351,7 @@ class AgentLoop:
         run_id: str | None = None,
     ) -> AgentResult:
         _validate_limits(max_steps, max_tokens, max_cost_usd)
+        system_prompt = build_system_prompt(system_prompt, self.harness_variant)  # b0: inalterado
         limits = _Limits(max_steps=max_steps, max_tokens=max_tokens, max_cost_usd=max_cost_usd)
         state = _RunState(messages=[
             {"role": "system", "content": system_prompt},
@@ -373,7 +382,7 @@ class AgentLoop:
         self._log("call_started", {"call_index": index})
 
         try:
-            response: LLMResponse = self.llm.complete(prepared.messages, tools=REQUEST_TOOLS)
+            response: LLMResponse = self.llm.complete(prepared.messages, tools=self._request_tools)
         except LLMCallFailed as exc:
             self._record_call(state, _failed_call_record(index, self.llm, exc))
             return protocol.STATUS_PROVIDER_ERROR, state.last_text, str(exc)
@@ -500,9 +509,11 @@ class AgentLoop:
         except Exception as exc:  # noqa: BLE001 - erro de ferramenta vira observação, não derruba o loop
             text = f"error: {call.name} failed: {type(exc).__name__}: {exc}"
             return _Dispatch(text, text, ok=False, truncated=False, kind=protocol.FAILURE_PROTOCOL)
+        # Saída vazia de run_bash ganha marcador só em b0_plus (o b0 entrega string vazia, como antes).
+        empty_marker = "(no output)" if self.harness_variant == VARIANT_B0_PLUS and call.name == "run_bash" else None
         # Resultado do executor: ok=True é OK; ok=False esperado (exit != 0, timeout, arquivo ausente) é DOMAIN.
         return _Dispatch(
-            observation=_format_observation(result, raw=False),
+            observation=_format_observation(result, raw=False, empty_marker=empty_marker),
             raw_output=_format_observation(result, raw=True),
             ok=result.ok,
             truncated=result.truncated,
@@ -779,9 +790,11 @@ def _tool_message(call: ToolCall, content: str) -> dict[str, Any]:
     return {"role": "tool", "tool_call_id": call.id, "name": call.name, "content": content}
 
 
-def _format_observation(result: ToolResult, *, raw: bool) -> str:
+def _format_observation(result: ToolResult, *, raw: bool, empty_marker: str | None = None) -> str:
     body = result.raw_output if raw else result.output
     if result.ok:
+        if empty_marker is not None and not body.strip():
+            return empty_marker
         return body
     head = f"error: {result.error}" if result.error else "error"
     return f"{head}\n{body}".rstrip() if body else head
