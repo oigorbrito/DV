@@ -48,6 +48,7 @@ T_CONT = ("tests/test_container_run.py",)
 T_CANARY = ("tests/test_canary.py",)
 SCRIPTS = "scripts"
 T_LEDGER = ("tests/test_ledger.py", "tests/test_agent_loop.py")
+T_BATCH = ("tests/test_batch_run.py",)
 
 MUTANTS: tuple[Mutant, ...] = (
     # --- precedência de estados (D1) -----------------------------------------------
@@ -297,6 +298,23 @@ MUTANTS: tuple[Mutant, ...] = (
            "        if isinstance(exc, TRANSIENT_TIMEOUT_EXCEPTIONS):\n            return True",
            "        if isinstance(exc, TRANSIENT_TIMEOUT_EXCEPTIONS):\n            return False",
            "timeouts treated as non-retryable (ledger closes on first hang)", T_LLM),
+    # --- lote multi-tarefa (contrato v3: null com motivo; vazamento; oráculo fora do workspace) ---
+    Mutant("M60", f"{SRC}/batch.py",
+           "        unmeasured[key] = reason\n        return None\n    return sum(values)",
+           "        unmeasured[key] = reason\n        return 0\n    return sum(values)",
+           "batch total reports 0 instead of null when a run is unmeasured (I6)", T_BATCH),
+    Mutant("M61", f"{SRC}/batch.py",
+           "            if leaks:\n                aborted = \"secret_leak\"  # caminhos apenas; o valor nunca é impresso\n                break",
+           "            if False:\n                aborted = \"secret_leak\"\n                break",
+           "secret leak does not stop the batch", T_BATCH),
+    Mutant("M62", f"{SRC}/batch.py",
+           "    oracle_path = oracle_dir / ORACLE_FILE",
+           "    oracle_path = workspace / ORACLE_FILE",
+           "verifier written inside the agent workspace (agent can forge PASS)", T_BATCH),
+    Mutant("M63", f"{SRC}/batch.py",
+           "                if not config.continue_on_error:\n                    raise",
+           "                if False:\n                    raise",
+           "harness error swallowed even with --no-continue-on-error", T_BATCH),
 )
 
 
