@@ -4,18 +4,23 @@ Tarefa: ``calc.py`` tem ``add`` com bug (``a - b``). O agente deve corrigir o ar
 ``check.py`` passe e então chamar ``submit``. O veredito é dado por ``check.py`` rodado
 **fora do loop**, e o ``outcome`` vem de ``protocol.outcome_for``. Não é a palavra do agente.
 
-Parâmetros fixos: ``max_steps=8``, ``max_cost_usd=0.10``, modelo ``claude-haiku-5-5``.
-Esse modelo tem preço na tabela do litellm. Um nome com prefixo ``anthropic/`` não tem, e o
-orçamento de custo ficaria ``budget_unverifiable`` desde o primeiro passo.
+Parâmetros fixos: ``max_steps=8``, ``max_cost_usd=0.10``. Padrões: ``--model claude-haiku-5-5`` e
+``--api-key-env ANTHROPIC_API_KEY``. Ambos podem ser trocados (ex.: ``--model gemini/gemini-2.5-flash``
+``--api-key-env GEMINI_API_KEY``).
+Esses modelos têm preço na tabela local do litellm (``litellm.model_cost``, imagem ``dv-harness:local``).
+Um nome com prefixo ``anthropic/`` não tem, e o orçamento de custo ficaria ``budget_unverifiable``
+desde o primeiro passo.
 
-Pré-requisito: ``ANTHROPIC_API_KEY`` no ambiente. O script **não** imprime o valor, e recusa
-rodar sem a variável (código de saída 2). Não simula resposta de modelo.
+Pré-requisito: a variável indicada em ``--api-key-env`` no ambiente. O script **não** imprime o valor,
+e recusa rodar se ela estiver ausente ou vazia (código de saída 2). O valor entra na varredura de
+vazamento do ledger e do resultado. Não simula resposta de modelo.
 
 Verificações do registro: campos de proveniência presentes ou ``None`` com motivo, ausência de
 sentinelas, schema do ledger, e varredura de vazamento do valor da chave em ledger e resultado.
 
 Uso (fora do repositório):
     python scripts/dv_smoke_run.py --outdir <dir-descartavel>
+    python scripts/dv_smoke_run.py --outdir <dir> --model gemini/gemini-2.5-flash --api-key-env GEMINI_API_KEY
 """
 
 from __future__ import annotations
@@ -23,6 +28,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -31,10 +37,11 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 
-MODEL = "claude-haiku-5-5"
+MODEL = "claude-haiku-5-5"  # padrão; --model troca
 MAX_STEPS = 8
 MAX_COST_USD = 0.10
-KEY_VAR = "ANTHROPIC_API_KEY"
+KEY_VAR = "ANTHROPIC_API_KEY"  # padrão; --api-key-env troca
+KEY_NAME_RE = re.compile(r"[A-Z_][A-Z0-9_]*")
 
 BUGGY_CALC = "def add(a, b):\n    return a - b\n"
 CHECK = "from calc import add\n\nassert add(2, 3) == 5\nassert add(-1, 1) == 0\nprint('OK')\n"
@@ -58,10 +65,17 @@ def _verify(workdir: Path) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--outdir", type=Path, default=None)
+    parser.add_argument("--model", default=MODEL, help=f"padrão: {MODEL}")
+    parser.add_argument("--api-key-env", default=KEY_VAR, metavar="NAME",
+                        help=f"nome da variável com a chave; padrão: {KEY_VAR}")
     args = parser.parse_args()
 
-    if not os.environ.get(KEY_VAR):
-        print(f"blocked: {KEY_VAR} is not set in this environment. Nothing was run.")
+    # O argumento é um NOME. Um valor de chave passado por engano não pode ser ecoado nas mensagens.
+    if not KEY_NAME_RE.fullmatch(args.api_key_env):
+        print("blocked: --api-key-env must be a variable NAME matching [A-Z_][A-Z0-9_]*. Nothing was run.")
+        return 2
+    if not os.environ.get(args.api_key_env):
+        print(f"blocked: {args.api_key_env} is not set (or empty) in this environment. Nothing was run.")
         print("The key must be added as an environment variable in the environment settings, then a new session started.")
         return 2
 
@@ -80,7 +94,7 @@ def main() -> int:
     (workspace / "check.py").write_text(CHECK, encoding="utf-8")
     ledger_path = outdir / "ledger.jsonl"
 
-    llm = LLMClient(default_model=MODEL, retry=RetryPolicy(max_attempts=3, base_delay_s=2.0))
+    llm = LLMClient(default_model=args.model, retry=RetryPolicy(max_attempts=3, base_delay_s=2.0))
     with RunLedger(ledger_path) as ledger:
         loop = AgentLoop(llm, ToolExecutor(workspace), ContextManager(keep_recent_observations=10), ledger=ledger)
         result = loop.run(TASK, SYSTEM, max_steps=MAX_STEPS, max_cost_usd=MAX_COST_USD, run_id="smoke-calc-001")
@@ -89,7 +103,7 @@ def main() -> int:
     outcome = outcome_for(result.status, verdict)
 
     report = {
-        "model_requested": MODEL,
+        "model_requested": args.model,
         "status": result.status,
         "verifier_verdict": verdict,
         "outcome": outcome,
@@ -121,7 +135,7 @@ def main() -> int:
     result_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
 
     # --- verificações do registro -----------------------------------------------------------
-    key = os.environ[KEY_VAR]
+    key = os.environ[args.api_key_env]
     leaks = []
     for path in (ledger_path, result_path):
         if key and key in path.read_text(encoding="utf-8"):
