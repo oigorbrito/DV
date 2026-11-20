@@ -1,16 +1,21 @@
-.PHONY: verify test bootstrap hooks clean help
+.PHONY: deps verify test bootstrap hooks clean help
 
 help:
 	@echo "Available commands:"
-	@echo "  make verify     - Run harness and full test suite"
+	@echo "  make deps       - Install pinned DV harness dependencies (requirements-dv-harness.txt)"
+	@echo "  make verify     - Run harness, pytest suite and tooling tests (POSIX/WSL for canary and mutation)"
 	@echo "  make test       - Alias to run tests"
 	@echo "  make bootstrap  - Interactive repository setup"
 	@echo "  make hooks      - Install local git hooks"
 	@echo "  make clean      - Clean cache and temporary files"
 
+deps:
+	python -m pip install -r requirements-dv-harness.txt
+
 verify:
 	python scripts/harness.py
-	python -m unittest discover -s tests -v
+	python -m pytest tests -v
+	cd tools && python -m unittest discover -p "test_*.py" -v
 
 test: verify
 
