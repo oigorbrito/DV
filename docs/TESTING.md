@@ -10,6 +10,7 @@ python -m unittest discover -s tests -v
 ## Escopo atual dos testes
 
 - `tests/test_harness.py`: testes do harness de maturidade (`scripts/harness.py`).
+- `tests/test_agent_loop.py`: testes do Módulo 4 (`src/dv_harness/agent_loop.py`). Integra LLM mockado com `ToolExecutor` e `ContextManager` reais em `tmp_path`. Cobrem conclusão direta, ciclo multi-turno em arquivos reais, recuperação de erros, parada exata por limites, `cost_usd=None` e masking acumulado. Executar: `python -m pytest tests/test_agent_loop.py -v`.
 - `tests/test_context_manager.py`: testes do Módulo 3 (`src/dv_harness/context_manager.py`). Cobrem preservação de `system`/`user`/`assistant`, janela de observações, `tool_call_id`, não-mutação do histórico e contagem de caracteres. Executar: `python -m pytest tests/test_context_manager.py -v`.
 - `tests/test_tool_executor.py`: testes do Módulo 2 (`src/dv_harness/tool_executor.py`) com `tmp_path`. Inclui medição de que o timeout não deixa processos órfãos. Testes de bash são pulados fora de POSIX. Executar: `python -m pytest tests/test_tool_executor.py -v`.
 - `tests/test_llm_client.py`: testes do Módulo 1 do harness modular (`src/dv_harness/llm_client.py`). Usa pytest e mocks, sem chamada real de API. Requer `pip install -r requirements-dv-harness.txt` e executa a partir da raiz: `python -m pytest tests/test_llm_client.py -v`.
