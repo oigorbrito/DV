@@ -72,6 +72,8 @@ def main() -> int:
                         help=f"nome da variável com a chave; padrão: {KEY_VAR}")
     parser.add_argument("--request-timeout-s", type=float, default=REQUEST_TIMEOUT_S, metavar="S",
                         help=f"timeout por requisição HTTP; padrão: {REQUEST_TIMEOUT_S}")
+    parser.add_argument("--harness-variant", default="b0", choices=["b0", "b0_plus"],
+                        help="b0 (padrão) ou b0_plus (ablação opt-in)")
     args = parser.parse_args()
 
     # O argumento é um NOME. Um valor de chave passado por engano não pode ser ecoado nas mensagens.
@@ -104,7 +106,10 @@ def main() -> int:
     llm = LLMClient(default_model=args.model, retry=RetryPolicy(max_attempts=3, base_delay_s=2.0),
                     request_timeout_s=args.request_timeout_s)
     with RunLedger(ledger_path) as ledger:
-        loop = AgentLoop(llm, ToolExecutor(workspace), ContextManager(keep_recent_observations=10), ledger=ledger)
+        variant = args.harness_variant
+        loop = AgentLoop(llm, ToolExecutor(workspace, harness_variant=variant),
+                         ContextManager(keep_recent_observations=10, harness_variant=variant), ledger=ledger,
+                         harness_variant=variant)
         result = loop.run(TASK, SYSTEM, max_steps=MAX_STEPS, max_cost_usd=MAX_COST_USD, run_id="smoke-calc-001")
 
     verdict = _verify(workspace)
@@ -112,6 +117,7 @@ def main() -> int:
 
     report = {
         "model_requested": args.model,
+        "harness_variant": args.harness_variant,
         "status": result.status,
         "verifier_verdict": verdict,
         "outcome": outcome,

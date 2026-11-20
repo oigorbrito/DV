@@ -40,6 +40,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from dv_harness.variants import VARIANT_B0_PLUS, check_variant
+
 DEFAULT_KEEP_RECENT_OBSERVATIONS = 10
 DEFAULT_PLACEHOLDER = "[Previous observation omitted for brevity]"
 
@@ -78,6 +80,40 @@ def _content_len(content: Any) -> int:
     return len(json.dumps(content, ensure_ascii=False, default=str))
 
 
+def _calls_by_id(messages: Sequence[Message]) -> dict[str, tuple[str, str]]:
+    """Mapeia ``tool_call_id`` -> (nome, argumentos) a partir das mensagens ``assistant``."""
+    found: dict[str, tuple[str, str]] = {}
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        for call in msg.get("tool_calls") or []:
+            fn = call.get("function") or {}
+            found[str(call.get("id"))] = (str(fn.get("name", "")), str(fn.get("arguments", "")))
+    return found
+
+
+def _line_count(content: Any) -> int:
+    text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False, default=str)
+    return len(text.splitlines())
+
+
+def _informative_placeholder(name: str, arguments: str, content: Any) -> str:
+    """Placeholder determinístico (b0_plus). Depende só de nome, argumentos e contagem de linhas."""
+    try:
+        args = json.loads(arguments) if arguments else {}
+    except json.JSONDecodeError:
+        args = {}
+    if not isinstance(args, dict):
+        args = {}
+    if name == "read_file":
+        target = f"read_file('{args.get('path', '')}')"
+    elif name == "run_bash":
+        target = f"run_bash('{str(args.get('command', ''))[:60]}')"
+    else:
+        target = name or "unknown"
+    return f"[Previous observation omitted for brevity: {target}, {_line_count(content)} lines]"
+
+
 class ContextManager:
     """Aplica Observation Masking a uma lista de mensagens.
 
@@ -89,6 +125,7 @@ class ContextManager:
         self,
         keep_recent_observations: int = DEFAULT_KEEP_RECENT_OBSERVATIONS,
         placeholder: str = DEFAULT_PLACEHOLDER,
+        harness_variant: str = "b0",
     ) -> None:
         if not isinstance(keep_recent_observations, int) or isinstance(keep_recent_observations, bool):
             raise TypeError("keep_recent_observations must be an int")
@@ -96,6 +133,7 @@ class ContextManager:
             raise ValueError("keep_recent_observations must be >= 0")
         self.keep_recent_observations = keep_recent_observations
         self.placeholder = placeholder
+        self.harness_variant = check_variant(harness_variant)
 
     def prepare(self, messages: Sequence[Message]) -> PreparedContext:
         """Devolve cópia preparada para envio ao LLM. ``messages`` não é alterado."""
@@ -103,7 +141,7 @@ class ContextManager:
         keep_from = max(0, len(observation_indices) - self.keep_recent_observations)
         to_mask = set(observation_indices[:keep_from])
 
-        placeholder_len = len(self.placeholder)
+        calls = _calls_by_id(messages) if self.harness_variant == VARIANT_B0_PLUS else {}
         prepared: list[dict[str, Any]] = []
         chars_before = 0
         chars_after = 0
@@ -112,12 +150,13 @@ class ContextManager:
             new_msg = copy.deepcopy(dict(msg))
             if i in to_mask:
                 original_len = _content_len(msg.get("content"))
+                placeholder = self._placeholder_for(msg, calls)
                 # Só mascara quando a troca economiza caracteres. Observação já menor que o
                 # placeholder fica como está, para não aumentar o contexto enviado.
-                if original_len > placeholder_len:
-                    new_msg["content"] = self.placeholder
+                if original_len > len(placeholder):
+                    new_msg["content"] = placeholder
                     chars_before += original_len
-                    chars_after += placeholder_len
+                    chars_after += len(placeholder)
                     masked += 1
             prepared.append(new_msg)
 
@@ -128,3 +167,10 @@ class ContextManager:
             chars_after=chars_after,
         )
         return PreparedContext(messages=prepared, stats=stats)
+
+    def _placeholder_for(self, msg: Message, calls: dict[str, tuple[str, str]]) -> str:
+        """Placeholder da observação: o configurado (b0) ou o informativo (b0_plus)."""
+        if self.harness_variant != VARIANT_B0_PLUS:
+            return self.placeholder
+        name, arguments = calls.get(str(msg.get("tool_call_id")), (str(msg.get("name", "")), ""))
+        return _informative_placeholder(name, arguments, msg.get("content"))

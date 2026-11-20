@@ -49,6 +49,7 @@ T_CANARY = ("tests/test_canary.py",)
 SCRIPTS = "scripts"
 T_LEDGER = ("tests/test_ledger.py", "tests/test_agent_loop.py")
 T_BATCH = ("tests/test_batch_run.py",)
+T_B0_PLUS = ("tests/test_b0_plus_variant.py",)
 
 MUTANTS: tuple[Mutant, ...] = (
     # --- precedência de estados (D1) -----------------------------------------------
@@ -344,6 +345,27 @@ MUTANTS: tuple[Mutant, ...] = (
            "        if before == after:",
            "        if False:",
            "patch stats count every file as changed (regression of the write_text CRLF bug)", T_BATCH),
+    # --- variante b0_plus (opt-in) e isolamento do b0 ---
+    Mutant("M71", f"{SRC}/tool_executor.py",
+           "            if len(windows) > 1:",
+           "            if False:",
+           "edit fallback applies an ambiguous match silently instead of rejecting it", T_B0_PLUS),
+    Mutant("M72", f"{SRC}/agent_loop.py",
+           "        return self._streak == self.threshold",
+           "        return self._streak == self.threshold + 1",
+           "doom loop fires one identical call late (threshold off by one)", T_B0_PLUS),
+    Mutant("M73", f"{SRC}/tool_executor.py",
+           "        return _apply_unique_replacement(text, old_text, new_text, path)",
+           "        return _apply_edit_with_fallback(text, old_text, new_text, path)[0:3:2]",
+           "b0 silently gets the b0_plus fuzzy edit (default mode no longer isolated)", T_B0_PLUS),
+    Mutant("M74", f"{SRC}/tool_executor.py",
+           "    head = int(budget * TAIL_HEAD_RATIO)",
+           "    head = budget // 2",
+           "tail truncation uses 50/50 instead of 20/80 (traceback start kept, end lost)", T_B0_PLUS),
+    Mutant("M75", f"{SRC}/agent_loop.py",
+           "            state.doom = DoomLoopTracker(DOOM_LOOP_THRESHOLD)",
+           "            state.doom = DoomLoopTracker(DOOM_LOOP_THRESHOLD)\n        else:\n            state.doom = DoomLoopTracker(DOOM_LOOP_THRESHOLD)",
+           "b0 gets the doom-loop advisory (default mode no longer isolated)", T_B0_PLUS),
 )
 
 

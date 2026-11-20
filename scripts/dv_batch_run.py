@@ -83,6 +83,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--fail-fast", action="store_true",
                         help="para o lote no primeiro outcome diferente de SOLVED (padrão: segue, sem abortar)")
     parser.add_argument("--limit", type=int, default=None, metavar="N", help="executa só as N primeiras tarefas")
+    parser.add_argument("--harness-variant", default="b0", choices=["b0", "b0_plus"],
+                        help="b0 (padrão, inalterado) ou b0_plus (ablação opt-in: edit fallback, cauda, doom loop)")
     parser.add_argument("--candidate-id", default=None, metavar="ID",
                         help="id do candidato no registro de triagem (opcional, somente leitura)")
     parser.add_argument("--git-head", default=None, metavar="SHA",
@@ -121,6 +123,7 @@ def main(argv: list[str] | None = None) -> int:
         git_head=args.git_head or batch.resolve_git_head(REPO),
         api_key_env=args.api_key_env,
         candidate_id=args.candidate_id,
+        harness_variant=args.harness_variant,
     )
 
     def make_llm(_task: batch.BatchTask) -> LLMClient:

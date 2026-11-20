@@ -43,12 +43,16 @@ Atribuições empíricas
 
 from __future__ import annotations
 
+import difflib
 import os
+import re
 import signal
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from dv_harness.variants import TAIL_HEAD_RATIO, VARIANT_B0_PLUS, check_variant
 
 DEFAULT_MAX_OUTPUT_CHARS = 10_000
 DEFAULT_TIMEOUT_S = 30
@@ -105,6 +109,117 @@ def truncate_output(text: str, limit: int) -> tuple[str, bool]:
     return text[:head] + marker + (text[-tail:] if tail else ""), True
 
 
+def truncate_tail_priority(text: str, limit: int) -> tuple[str, bool]:
+    """Truncamento de cauda (b0_plus): 20% do orçamento no início, 80% no fim.
+
+    O fim concentra erros e tracebacks; o início preserva o comando e o cabeçalho da saída.
+    O marcador conta no limite, como em ``truncate_output``.
+    """
+    if limit < 0:
+        raise ValueError("limit must be >= 0")
+    if len(text) <= limit:
+        return text, False
+    marker_template = "\n[... {omitted} caracteres omitidos (tail_priority) ...]\n"
+    reserve = len(marker_template.format(omitted=len(text)))
+    if limit <= reserve:
+        return (text[-limit:] if limit else ""), True
+    budget = limit - reserve
+    head = int(budget * TAIL_HEAD_RATIO)
+    tail = budget - head
+    omitted = len(text) - head - tail
+    marker = marker_template.format(omitted=omitted)
+    return text[:head] + marker + (text[-tail:] if tail else ""), True
+
+
+_ELEMENT_RE = re.compile(r"[^\n]*\n|[^\n]+")
+
+
+def _elements(text: str) -> list[str]:
+    """Linhas com o terminador de linha incluído (o último pode não ter)."""
+    return _ELEMENT_RE.findall(text)
+
+
+def _strip_terminator(element: str) -> str:
+    return element[:-1] if element.endswith("\n") else element
+
+
+def _fit_terminator(new_text: str, ends_nl: bool) -> str:
+    """Ajusta a quebra final de ``new_text`` ao bloco original. Substituir por vazio remove o bloco."""
+    if new_text == "":
+        return ""
+    body = new_text[:-1] if new_text.endswith("\n") else new_text
+    return body + ("\n" if ends_nl else "")
+
+
+def _line_windows(body: str, old: str, norm: Any) -> list[tuple[int, int]]:
+    """Janelas ``(início, tamanho)`` de linhas inteiras cujo texto normalizado casa com ``old``."""
+    old_elems = _elements(old)
+    body_elems = _elements(body)
+    k = len(old_elems)
+    if k == 0 or k > len(body_elems):
+        return []
+    old_norm = [norm(_strip_terminator(e)) for e in old_elems]
+    return [(i, k) for i in range(len(body_elems) - k + 1)
+            if all(norm(_strip_terminator(body_elems[i + j])) == old_norm[j] for j in range(k))]
+
+
+def _crlf_normalised(text: str, old_text: str, new_text: str) -> tuple[bool, str, str, str]:
+    """Arquivo inteiramente CRLF: busca e substituição em LF. Devolve ``(puro_crlf, corpo, antigo, novo)``."""
+    crlf = text.count("\r\n")
+    pure_crlf = crlf > 0 and text.count("\n") == crlf
+    if pure_crlf:
+        return True, text.replace("\r\n", "\n"), old_text.replace("\r\n", "\n"), new_text.replace("\r\n", "\n")
+    return False, text, old_text, new_text
+
+
+def _apply_edit_with_fallback(text: str, old_text: str, new_text: str, path: str
+                              ) -> tuple[str | None, str | None, ToolResult | None]:
+    """Substituição única em 3 estágios (b0_plus): exact, line_trimmed, indentation_flexible.
+
+    Cada estágio exige exatamente uma ocorrência. Ambiguidade em qualquer estágio é erro imediato,
+    sem avançar. Só avança quando o estágio não acha nenhuma ocorrência. Devolve
+    ``(texto_novo, estágio, erro)``. A terminação de linha (CRLF ou LF) e a presença de quebra
+    final do bloco original são preservadas.
+    """
+    pure_crlf, body, old, new = _crlf_normalised(text, old_text, new_text)
+
+    count = body.count(old)
+    if count > 1:
+        return None, "exact", _ambiguous(count, "exact", path)
+    if count == 1:
+        updated, stage = body.replace(old, _fit_terminator(new, old.endswith("\n")), 1), "exact"
+    else:
+        updated = stage = None
+        for name, norm in (("line_trimmed", str.rstrip), ("indentation_flexible", str.strip)):
+            windows = _line_windows(body, old, norm)
+            if len(windows) > 1:
+                return None, name, _ambiguous(len(windows), name, path)
+            if windows:
+                i, k = windows[0]
+                elems = _elements(body)
+                ends_nl = elems[i + k - 1].endswith("\n")
+                updated = "".join(elems[:i]) + _fit_terminator(new, ends_nl) + "".join(elems[i + k:])
+                stage = name
+                break
+        if updated is None:
+            return None, None, ToolResult(ok=False, error=f"old_text not found in {path}")
+    if pure_crlf:
+        updated = updated.replace("\n", "\r\n")
+    return updated, stage, None
+
+
+def _ambiguous(count: int, stage: str, path: str) -> ToolResult:
+    return ToolResult(ok=False, error=f"old_text is ambiguous: {count} matches in {path} ({stage}); "
+                                      "include more context")
+
+
+def _unified_diff(path: str, before: str, after: str) -> str:
+    """Diff unificado com 4 linhas de contexto (n=4), para o modelo ver o efeito da edição."""
+    a = [line if line.endswith("\n") else line + "\n" for line in _elements(before)]
+    b = [line if line.endswith("\n") else line + "\n" for line in _elements(after)]
+    return "".join(difflib.unified_diff(a, b, fromfile=f"a/{path}", tofile=f"b/{path}", n=4))
+
+
 def split_lines(text: str) -> list[str]:
     """Divide estritamente em ``\\n``. Não usa ``splitlines()``, que quebra em \\x0c, \\x0b, \\u2028 etc.
 
@@ -134,9 +249,11 @@ class ToolExecutor:
         root: str | os.PathLike[str] | None = None,
         *,
         max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS,
+        harness_variant: str = "b0",
     ) -> None:
         self.root = (Path(root) if root is not None else Path.cwd()).resolve()
         self.max_output_chars = max_output_chars
+        self.harness_variant = check_variant(harness_variant)
 
     def _resolve(self, path: str) -> Path:
         """Resolve ``path`` contra ``root``. Levanta ``PathError`` (ou subclasse) se inválido."""
@@ -248,17 +365,36 @@ class ToolExecutor:
         except UnicodeDecodeError:
             return ToolResult(ok=False, error=f"not valid UTF-8 text: {path}")
 
-        updated, problem = _apply_unique_replacement(text, old_text, new_text, path)
+        updated, problem = self._replace_for_variant(text, old_text, new_text, path)
         if problem is not None:
             return problem
         try:
             target.write_text(updated, encoding="utf-8", newline="")
         except OSError as exc:
             return ToolResult(ok=False, error=f"write failed: {exc.strerror or exc}")
-        message = f"edited {path}"
+        message = self._edit_message(path, text, updated)
         return ToolResult(ok=True, output=message, raw_output=message)
 
     # --- run_bash ------------------------------------------------------------
+
+    def _replace_for_variant(self, text: str, old_text: str, new_text: str, path: str) -> tuple[str | None, ToolResult | None]:
+        """b0: substituição única literal. b0_plus: fallback de 3 estágios com unicidade estrita."""
+        if self.harness_variant == VARIANT_B0_PLUS:
+            updated, _stage, problem = _apply_edit_with_fallback(text, old_text, new_text, path)
+            return updated, problem
+        return _apply_unique_replacement(text, old_text, new_text, path)
+
+    def _edit_message(self, path: str, before: str, after: str) -> str:
+        """b0: 'edited <path>'. b0_plus: o mesmo cabeçalho mais o diff unificado (n=4)."""
+        if self.harness_variant == VARIANT_B0_PLUS:
+            return f"edited {path}\n" + _unified_diff(path, before, after)
+        return f"edited {path}"
+
+    def _truncate_command_output(self, text: str) -> tuple[str, bool]:
+        """b0: início e fim 50/50. b0_plus: cauda priorizada (20/80). ``raw_output`` nunca é truncado."""
+        if self.harness_variant == VARIANT_B0_PLUS:
+            return truncate_tail_priority(text, self.max_output_chars)
+        return truncate_output(text, self.max_output_chars)
 
     def run_bash(
         self,
@@ -295,7 +431,7 @@ class ToolExecutor:
             _kill_group(proc)
             stdout, stderr = proc.communicate()
             full = _decode(stdout) + _decode(stderr)
-            out, truncated = truncate_output(full, self.max_output_chars)
+            out, truncated = self._truncate_command_output(full)
             return ToolResult(
                 ok=False,
                 output=out,
@@ -310,7 +446,7 @@ class ToolExecutor:
         err_text = _decode(stderr)
         if err_text:
             combined = f"{combined}\n[stderr]\n{err_text}" if combined else f"[stderr]\n{err_text}"
-        out, truncated = truncate_output(combined, self.max_output_chars)
+        out, truncated = self._truncate_command_output(combined)
         ok = proc.returncode == 0
         return ToolResult(
             ok=ok,
@@ -328,14 +464,7 @@ def _apply_unique_replacement(text: str, old_text: str, new_text: str, path: str
 
     Arquivo inteiramente CRLF: busca e substituição em LF, com CRLF restaurado no resultado.
     """
-    crlf = text.count("\r\n")
-    pure_crlf = crlf > 0 and text.count("\n") == crlf
-    if pure_crlf:
-        body = text.replace("\r\n", "\n")
-        needle = old_text.replace("\r\n", "\n")
-        replacement = new_text.replace("\r\n", "\n")
-    else:
-        body, needle, replacement = text, old_text, new_text
+    pure_crlf, body, needle, replacement = _crlf_normalised(text, old_text, new_text)
     count = body.count(needle)
     if count == 0:
         return None, ToolResult(ok=False, error=f"old_text not found in {path}")

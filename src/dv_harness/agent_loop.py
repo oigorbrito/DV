@@ -67,6 +67,7 @@ from typing import Any
 from dv_harness import protocol
 from dv_harness.context_manager import ContextManager
 from dv_harness.ledger import RunLedger
+from dv_harness.variants import DOOM_LOOP_THRESHOLD, REFERENCE_PROVENANCE, VARIANT_B0_PLUS, check_variant
 from dv_harness.llm_client import (
     PRICING_SOURCE,
     AttemptRecord,
@@ -87,6 +88,11 @@ DEFAULT_MAX_STEPS = 30
 DEFAULT_ERROR_LIMIT = 3
 ERROR_MAX_CHARS = 300
 SUBMIT_TOOL_NAME = "submit"
+# Aviso anexado à observação enviada ao modelo (b0_plus). Não é erro de protocolo nem altera o ledger.
+SYSTEM_ADVISORY = (
+    "[SYSTEM ADVISORY] The tool call {name} with the same arguments has been repeated {count} times in a row. "
+    "Stop repeating it: inspect the current state, change the tool or its arguments, or submit if the task is done."
+)
 TOOL_NAMES: tuple[str, ...] = ("read_file", "write_file", "edit_file", "run_bash")
 
 SUBMIT_SCHEMA: dict[str, Any] = {
@@ -213,6 +219,7 @@ class _RunState:
     protocol_errors: int = 0
     domain_failures: int = 0
     tool_ms: float = 0.0
+    doom: DoomLoopTracker | None = None  # só em b0_plus
 
 
 @dataclass(frozen=True)
@@ -258,6 +265,40 @@ def _check_budgets(calls: list[CallRecord], max_tokens: int | None, max_cost_usd
     return None
 
 
+def _canonical_arguments(arguments: str) -> str:
+    """Argumentos em JSON canônico (chaves ordenadas). Texto inválido vira o próprio texto, sem parse."""
+    try:
+        return json.dumps(json.loads(arguments) if arguments else {}, sort_keys=True,
+                          separators=(",", ":"), ensure_ascii=False)
+    except (json.JSONDecodeError, TypeError):
+        return arguments.strip()
+
+
+class DoomLoopTracker:
+    """Repetição consecutiva idêntica de (ferramenta, argumentos canônicos).
+
+    ``observe`` devolve ``True`` exatamente quando a sequência atual chega ao limiar. Cada sequência
+    dispara uma vez. Mudar a ferramenta ou os argumentos reinicia a contagem. Não olha a saída:
+    o critério é o comportamento do agente, não o resultado.
+    """
+
+    def __init__(self, threshold: int = DOOM_LOOP_THRESHOLD) -> None:
+        if threshold < 2:
+            raise ValueError("threshold must be >= 2")
+        self.threshold = threshold
+        self._signature: tuple[str, str] | None = None
+        self._streak = 0
+
+    def observe(self, name: str, arguments: str) -> bool:
+        signature = (name, _canonical_arguments(arguments))
+        if signature == self._signature:
+            self._streak += 1
+        else:
+            self._signature = signature
+            self._streak = 1
+        return self._streak == self.threshold
+
+
 class AgentLoop:
     """Compõe ``llm`` (com ``complete``), ``executor`` (ToolExecutor) e ``context`` (ContextManager).
 
@@ -272,9 +313,14 @@ class AgentLoop:
         *,
         ledger: RunLedger | None = None,
         error_limit: int = DEFAULT_ERROR_LIMIT,
+        harness_variant: str = "b0",
     ) -> None:
         if error_limit < 1:
             raise ValueError("error_limit must be >= 1")
+        self.harness_variant = check_variant(harness_variant)
+        for part in (executor, context):  # uma variante só: nunca misturar b0 e b0_plus numa execução
+            if getattr(part, "harness_variant", "b0") != self.harness_variant:
+                raise ValueError("harness_variant must match the ToolExecutor and ContextManager variant")
         self.llm = llm
         self.executor = executor
         self.context = context
@@ -297,6 +343,8 @@ class AgentLoop:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": task},
         ])
+        if self.harness_variant == VARIANT_B0_PLUS:
+            state.doom = DoomLoopTracker(DOOM_LOOP_THRESHOLD)
         run_started = time.perf_counter()
         self._log("run_started", {"run_id": run_id, "config": self._config_snapshot(limits)})
 
@@ -373,7 +421,11 @@ class AgentLoop:
             dispatch, event, elapsed_ms = self._execute(call, index, len(state.tool_events) + 1)
             state.tool_ms += elapsed_ms
             state.tool_events.append(event)
-            observations[call.id] = dispatch.observation
+            observation = dispatch.observation
+            if state.doom is not None and state.doom.observe(call.name, call.arguments):
+                advisory = SYSTEM_ADVISORY.format(name=call.name, count=state.doom.threshold)
+                observation = f"{observation}\n{advisory}" if observation else advisory
+            observations[call.id] = observation  # ToolEvent.observation e o ledger ficam intactos
             kinds.append(dispatch.kind)
 
         submitted: str | None = None
@@ -478,6 +530,8 @@ class AgentLoop:
             "env_allowlist": list(ENV_ALLOWLIST),
             "pricing_source": PRICING_SOURCE,
             "contract": protocol.CONTRACT_ID,
+            "harness_variant": self.harness_variant,
+            "reference_provenance": REFERENCE_PROVENANCE,
         }
 
     def _log(self, event: str, payload: dict[str, Any]) -> None:

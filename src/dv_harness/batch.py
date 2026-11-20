@@ -50,6 +50,7 @@ from dv_harness.agent_loop import AgentLoop
 from dv_harness.context_manager import ContextManager
 from dv_harness.ledger import RunLedger, reconcile
 from dv_harness.tool_executor import ToolExecutor
+from dv_harness.variants import DEFAULT_VARIANT, REFERENCE_PROVENANCE, check_variant
 
 BATCH_SCHEMA = "dv-batch-summary-v1"
 MANIFEST_SCHEMA = "dv-batch-manifest-v1"
@@ -121,6 +122,7 @@ class BatchConfig:
     git_head: str | None
     api_key_env: str
     candidate_id: str | None = None
+    harness_variant: str = DEFAULT_VARIANT  # b0 (padrão) ou b0_plus (ablação opt-in)
 
     def describe(self) -> dict[str, Any]:
         return {
@@ -135,6 +137,8 @@ class BatchConfig:
             "git_head": self.git_head,
             "candidate_id": self.candidate_id,
             "api_key_env": self.api_key_env,  # o NOME da variável, nunca o valor
+            "harness_variant": self.harness_variant,
+            "reference_provenance": REFERENCE_PROVENANCE,
         }
 
 
@@ -437,7 +441,10 @@ def run_one(task: BatchTask, run_dir: Path, llm: Any, config: BatchConfig, *,
     oracle_path.write_bytes(task.oracle.encode("utf-8"))
 
     with RunLedger(run_dir / "ledger.jsonl") as ledger:
-        loop = AgentLoop(llm, ToolExecutor(workspace), ContextManager(keep_recent_observations=10), ledger=ledger)
+        variant = check_variant(config.harness_variant)
+        loop = AgentLoop(llm, ToolExecutor(workspace, harness_variant=variant),
+                         ContextManager(keep_recent_observations=10, harness_variant=variant), ledger=ledger,
+                         harness_variant=variant)
         result = loop.run(task.statement, SYSTEM_PROMPT, max_steps=config.max_steps,
                           max_cost_usd=cap, run_id=task.task_id)
 
@@ -800,6 +807,8 @@ def summarize(runs: list[dict[str, Any]], *, planned: int, config: BatchConfig, 
         "schema": BATCH_SCHEMA,
         "contract_id": protocol.CONTRACT_ID,
         "scope": SCOPE,
+        "harness_variant": config.harness_variant,
+        "reference_provenance": REFERENCE_PROVENANCE,
         "git_head": config.git_head,
         "model_requested": config.model,
         "request_timeout_s": config.request_timeout_s,
