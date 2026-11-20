@@ -1,0 +1,3 @@
+# Dependências do harness modular (Módulo 1: LLMClient). Versões fixadas para reprodutibilidade.
+litellm==1.110.1
+pytest==9.2.0

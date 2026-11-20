@@ -25,6 +25,7 @@ Fora do limite: os executores externos (Codex, Aider, modelos locais via Ollama,
 | `pilot-runs/` | Registros de execuções piloto. |
 | `policy/` | Estado do projeto e seu schema, lidos pelo harness. |
 | `scripts/harness.py` | Harness de evidência e maturidade. Imprime `PASS`, `GAP`, `UNKNOWN_EXTERNAL` e `NOT_APPLICABLE`. |
+| `src/dv_harness/llm_client.py` | Módulo 1 do harness modular: `LLMClient`, adaptador fino sobre `litellm` (tool calling nativo, tokens e `cost_usd` por chamada). Dependências fixadas em `requirements-dv-harness.txt`. Testes em `tests/test_llm_client.py` (pytest, sem chamada de API). |
 | `.github/workflows/` | 13 workflows de validação, de análise de segurança e de rotulagem. |
 
 ## Interfaces
