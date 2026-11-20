@@ -1,39 +1,37 @@
 """LLMClient: adaptador fino e multi-provedor sobre ``litellm`` com tool calling nativo.
 
-Módulo 1 do harness modular (``feat/modular-harness-core``). Escopo deliberadamente
-restrito: uma chamada de completion por invocação, com contabilização de tokens, custo,
-latência e metadados de origem por chamada. Não contém loop de agente, executor nem
-gerenciamento de contexto.
+Módulo 1 do harness modular, revisado no protocolo p1 v2.
 
-Classificação (AGENTS.md, "Architecture default"): REUSE/WRAP. O ``litellm`` é a
-capacidade de prior art que satisfaz o contrato (troca de provedor via ``model``,
-tool calling nativo, contagem de tokens e custo). Este módulo apenas normaliza a
-resposta para um tipo estável. Não é um gateway de modelos próprio.
+Escopo: uma chamada lógica ao modelo por invocação, com retentativas por política
+(backoff exponencial, lista de abortos) e registro de **cada tentativa**, inclusive as
+que falharam. Não contém loop de agente, executor nem gerenciamento de contexto.
+
+Classificação (AGENTS.md, "Architecture default"): REUSE/WRAP. O ``litellm`` satisfaz o
+contrato de troca de provedor, tool calling e contagem. Este módulo normaliza a resposta
+e aplica a política de retentativa.
 
 Atribuições empíricas
 ---------------------
-- Padrão arquitetural (``LLMClient`` fino sobre ``litellm`` com tool calling nativo):
-  baseado no ``SWE-agent/mini-swe-agent`` (https://github.com/swe-agent/mini-swe-agent),
-  que usa LiteLLM como camada de acesso a modelos. A versão 2.4.6 foi confirmada como
-  publicada no PyPI. Não foi verificado changelog específico dessa versão.
-- Contabilização obrigatória de tokens e custo por chamada: fundamentada no SWE-Effi
-  (https://arxiv.org/abs/2509.09853), que avalia eficácia sob orçamento de tokens
-  (EuTB) e de custo (EuCB).
+- Padrão ``LLMClient`` fino sobre ``litellm`` com tool calling nativo:
+  ``SWE-agent/mini-swe-agent`` 2.4.6 (https://github.com/SWE-agent/mini-swe-agent),
+  ``src/minisweagent/models/litellm_model.py``.
+- Lista de abortos (sem retentativa): mesma lista de ``litellm_model.py:50-57``
+  (``UnsupportedParamsError``, ``NotFoundError``, ``PermissionDeniedError``,
+  ``ContextWindowExceededError``, ``AuthenticationError``, ``KeyboardInterrupt``).
+- Política de retentativa com backoff exponencial: ``models/utils/retry.py:19-25``
+  do mini (tenacity). Diferenças deliberadas: backoff determinístico, sem jitter, para
+  reprodutibilidade, e ``max_attempts=5`` (mini 10, ctrap 20). Ambas as referências
+  **não** contabilizam o custo das tentativas que falharam; aqui isso é obrigatório.
+- Contabilização de tokens e custo por chamada: SWE-Effi (arXiv:2509.09853).
 
-Limitações conhecidas
----------------------
-- ``cost_usd`` é calculado pela tabela de preços do ``litellm`` (estimativa local,
-  não fatura do provedor). Quando o modelo não tem preço na tabela, ``cost_usd`` é
-  ``None``. Esse caso é o único que vira ``None``. Outras falhas na função de custo
-  propagam, para não se disfarçarem de "preço desconhecido".
-- ``pricing_source`` identifica a versão do litellm que forneceu o preço. A data do
-  preço não é exposta pelo litellm, e fica registrada como não medida no ``AgentLoop``.
-- ``cached_input_tokens`` e ``reasoning_tokens`` são lidos de ``usage`` quando o provedor
-  os expõe. Caso contrário valem ``None`` (não medido), nunca ``0``.
-- ``provider`` e ``api_id`` vêm de metadados que o litellm expõe. Quando ausentes, valem
-  ``None``.
-- Erros do provedor não são capturados aqui. Propagam como levantados pelo ``litellm``.
-  Quem captura é o ``AgentLoop``.
+Semântica de sentinelas (invariante I6)
+--------------------------------------
+- Campo ``None`` significa **não medido**. ``0`` significa medido e zero.
+- Usage ausente do provedor resulta em ``None``, nunca em ``0``.
+- ``cost_basis``: ``priced_by_table`` (custo > 0 da tabela), ``priced_zero_by_table``
+  (``0.0`` da tabela, ex.: modelos ``ollama/*``, que a tabela cadastra com preço zero),
+  ou ``unknown`` (sem preço). Zero de tabela não é custo medido nem custo zero real.
+- ``wall_clock_ms`` inclui todas as tentativas e as esperas de backoff.
 """
 
 from __future__ import annotations
@@ -46,26 +44,101 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import litellm
-from litellm.exceptions import BadRequestError
+from litellm.exceptions import (
+    AuthenticationError,
+    BadRequestError,
+    ContextWindowExceededError,
+    NotFoundError,
+    PermissionDeniedError,
+    UnsupportedParamsError,
+)
+
+from dv_harness.protocol import cost_basis_for
 
 Message = Mapping[str, Any]
 Tool = Mapping[str, Any]
 
 try:
     _LITELLM_VERSION = importlib.metadata.version("litellm")
-except importlib.metadata.PackageNotFoundError:  # pragma: no cover - ambiente sem pacote instalado
+except importlib.metadata.PackageNotFoundError:  # pragma: no cover
     _LITELLM_VERSION = "unknown"
 PRICING_SOURCE = f"litellm=={_LITELLM_VERSION} bundled price table"
+
+# Lista de abortos de litellm_model.py:50-57 (KeyboardInterrupt não é Exception e não entra aqui).
+ABORT_EXCEPTIONS: tuple[type[BaseException], ...] = (
+    UnsupportedParamsError,
+    NotFoundError,
+    PermissionDeniedError,
+    ContextWindowExceededError,
+    AuthenticationError,
+)
+
+ERROR_MAX_CHARS = 300
+
+
+@dataclass(frozen=True)
+class RetryPolicy:
+    """Política de retentativa. Backoff ``base * multiplier**(n-1)`` limitado a ``max_delay_s``."""
+
+    max_attempts: int = 5
+    base_delay_s: float = 1.0
+    multiplier: float = 2.0
+    max_delay_s: float = 60.0
+    abort_on: tuple[type[BaseException], ...] = ABORT_EXCEPTIONS
+
+    def __post_init__(self) -> None:
+        if self.max_attempts < 1:
+            raise ValueError("max_attempts must be >= 1")
+        if self.base_delay_s < 0 or self.max_delay_s < 0 or self.multiplier < 1:
+            raise ValueError("invalid backoff parameters")
+
+    def is_retryable(self, exc: BaseException) -> bool:
+        return not isinstance(exc, self.abort_on)
+
+    def delay_for(self, failed_attempt: int) -> float:
+        """Espera após a tentativa de número ``failed_attempt`` (1-based)."""
+        return min(self.max_delay_s, self.base_delay_s * (self.multiplier ** (failed_attempt - 1)))
+
+    def describe(self) -> dict[str, Any]:
+        return {
+            "max_attempts": self.max_attempts,
+            "base_delay_s": self.base_delay_s,
+            "multiplier": self.multiplier,
+            "max_delay_s": self.max_delay_s,
+            "abort_on": [t.__name__ for t in self.abort_on],
+        }
+
+
+@dataclass(frozen=True)
+class AttemptRecord:
+    """Uma tentativa de chamada. Tentativas que falharam não têm uso de tokens conhecido."""
+
+    index: int
+    outcome: str  # "ok" | "error"
+    wall_clock_ms: float
+    error_type: str | None = None
+    error_message: str | None = None
+    retryable: bool | None = None
+    backoff_s: float | None = None
+
+
+class LLMCallFailed(Exception):
+    """Todas as tentativas falharam, ou a falha não é retentável. Carrega tentativas e tempo total."""
+
+    def __init__(
+        self,
+        attempts: tuple[AttemptRecord, ...],
+        cause: BaseException,
+        wall_clock_ms: float,
+    ) -> None:
+        self.attempts = attempts
+        self.cause = cause
+        self.wall_clock_ms = wall_clock_ms
+        super().__init__(f"{type(cause).__name__}: {_truncate(str(cause))}")
 
 
 @dataclass(frozen=True)
 class ToolCall:
-    """Uma chamada de ferramenta solicitada pelo modelo.
-
-    ``arguments`` é a string JSON bruta devolvida pelo provedor. Use ``parsed_arguments``
-    para obter o dicionário decodificado.
-    """
-
     id: str
     name: str
     arguments: str
@@ -80,39 +153,36 @@ class ToolCall:
 
 @dataclass(frozen=True)
 class LLMResponse:
-    """Resposta normalizada de uma chamada ao modelo, com contabilização por chamada.
+    """Resposta normalizada e contabilizada de uma chamada lógica (com suas tentativas).
 
-    Campos opcionais valem ``None`` quando não medidos. ``0`` significa medido e zero.
+    Campos ``None`` significam não medidos.
     """
 
     content: str | None
     tool_calls: tuple[ToolCall, ...] = field(default_factory=tuple)
-    model: str = ""
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    total_tokens: int = 0
+    model: str | None = None
+    model_returned: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
     cost_usd: float | None = None
+    cost_basis: str = "unknown"
     provider: str | None = None
     api_id: str | None = None
-    wall_clock_ms: float = 0.0
+    wall_clock_ms: float | None = None
     cached_input_tokens: int | None = None
     reasoning_tokens: int | None = None
     pricing_source: str | None = None
+    attempts: tuple[AttemptRecord, ...] = field(default_factory=tuple)
 
 
 CompletionFn = Callable[..., Any]
 CostFn = Callable[..., float]
+SleepFn = Callable[[float], None]
 
 
 class LLMClient:
-    """Cliente fino sobre ``litellm.completion``.
-
-    Troca de modelo por configuração: passe ``default_model`` (ex.: ``"gpt-4o-mini"``,
-    ``"anthropic/claude-haiku-5-5"``, ``"ollama/qwen2.5-coder"``) ou ``model`` por chamada.
-
-    ``completion_fn`` e ``cost_fn`` são injetáveis para teste sem chamada de API.
-    Por padrão usam ``litellm.completion`` e ``litellm.completion_cost``.
-    """
+    """Cliente fino sobre ``litellm.completion`` com política de retentativa."""
 
     def __init__(
         self,
@@ -120,11 +190,15 @@ class LLMClient:
         *,
         completion_fn: CompletionFn | None = None,
         cost_fn: CostFn | None = None,
+        retry: RetryPolicy | None = None,
+        sleep_fn: SleepFn | None = None,
         **default_params: Any,
     ) -> None:
         self.default_model = default_model
         self._completion = completion_fn or litellm.completion
         self._cost = cost_fn or litellm.completion_cost
+        self.retry = retry or RetryPolicy()
+        self._sleep = sleep_fn or time.sleep
         self._default_params = default_params
 
     def complete(
@@ -133,10 +207,11 @@ class LLMClient:
         tools: Sequence[Tool] | None = None,
         model: str | None = None,
     ) -> LLMResponse:
-        """Executa uma chamada de completion e devolve ``LLMResponse``.
+        """Executa a chamada lógica, com retentativas, e devolve ``LLMResponse``.
 
-        ``tools`` só é enviado quando não vazio, pois alguns provedores rejeitam lista vazia.
-        ``wall_clock_ms`` mede somente a chamada ao provedor, sem o cálculo de custo.
+        Levanta ``LLMCallFailed`` (com as tentativas) quando a falha não é retentável ou
+        quando o limite de tentativas se esgota. Outras exceções, como erro de custo ou de
+        parsing da resposta, propagam como bugs.
         """
         effective_model = model or self.default_model
         if not effective_model:
@@ -148,45 +223,79 @@ class LLMClient:
         if tools:
             kwargs["tools"] = list(tools)
 
-        started = time.perf_counter()
-        raw = self._completion(model=effective_model, messages=list(messages), **kwargs)
-        wall_clock_ms = (time.perf_counter() - started) * 1000.0
+        attempts: list[AttemptRecord] = []
+        call_started = time.perf_counter()
+        raw: Any = None
+        attempt_no = 0
+        while True:
+            attempt_no += 1
+            started = time.perf_counter()
+            try:
+                raw = self._completion(model=effective_model, messages=list(messages), **kwargs)
+            except Exception as exc:  # noqa: BLE001 - fronteira do provedor; registrado, nunca silenciado
+                elapsed = (time.perf_counter() - started) * 1000.0
+                retryable = self.retry.is_retryable(exc)
+                more = retryable and attempt_no < self.retry.max_attempts
+                backoff = self.retry.delay_for(attempt_no) if more else None
+                attempts.append(AttemptRecord(
+                    index=attempt_no,
+                    outcome="error",
+                    wall_clock_ms=elapsed,
+                    error_type=type(exc).__name__,
+                    error_message=_truncate(str(exc)),
+                    retryable=retryable,
+                    backoff_s=backoff,
+                ))
+                if not more:
+                    total_ms = (time.perf_counter() - call_started) * 1000.0
+                    raise LLMCallFailed(tuple(attempts), exc, total_ms) from exc
+                self._sleep(backoff)  # type: ignore[arg-type]
+                continue
+            attempts.append(AttemptRecord(
+                index=attempt_no,
+                outcome="ok",
+                wall_clock_ms=(time.perf_counter() - started) * 1000.0,
+            ))
+            break
+        wall_clock_ms = (time.perf_counter() - call_started) * 1000.0
 
         message = raw.choices[0].message
         tool_calls = tuple(
-            ToolCall(
-                id=str(tc.id),
-                name=tc.function.name,
-                arguments=tc.function.arguments or "",
-            )
+            ToolCall(id=str(tc.id), name=tc.function.name, arguments=tc.function.arguments or "")
             for tc in (getattr(message, "tool_calls", None) or ())
         )
 
         usage = getattr(raw, "usage", None)
-        prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
-        completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+        prompt_tokens = _int_or_none(getattr(usage, "prompt_tokens", None))
+        completion_tokens = _int_or_none(getattr(usage, "completion_tokens", None))
+        total_tokens = (
+            None if prompt_tokens is None or completion_tokens is None else prompt_tokens + completion_tokens
+        )
         cost = self._cost_or_none(raw, effective_model)
 
         return LLMResponse(
             content=getattr(message, "content", None),
             tool_calls=tool_calls,
             model=effective_model,
+            model_returned=_str_or_none(getattr(raw, "model", None)),
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
-            total_tokens=prompt_tokens + completion_tokens,
+            total_tokens=total_tokens,
             cost_usd=cost,
+            cost_basis=cost_basis_for(cost),
             provider=_provider_of(raw),
             api_id=_str_or_none(getattr(raw, "id", None)),
             wall_clock_ms=wall_clock_ms,
             cached_input_tokens=_detail(usage, "prompt_tokens_details", "cached_tokens"),
             reasoning_tokens=_detail(usage, "completion_tokens_details", "reasoning_tokens"),
             pricing_source=PRICING_SOURCE if cost is not None else None,
+            attempts=tuple(attempts),
         )
 
     def _cost_or_none(self, raw: Any, model: str) -> float | None:
         """Custo em USD, ou ``None`` só quando o litellm não tem preço para o modelo.
 
-        Outras exceções propagam. Um bug na função de custo não pode virar "preço desconhecido".
+        Outras exceções propagam. Bug na função de custo não pode virar "preço desconhecido".
         """
         try:
             return float(self._cost(completion_response=raw, model=model))
@@ -194,11 +303,18 @@ class LLMClient:
             return None
 
 
+def _truncate(text: str) -> str:
+    return text if len(text) <= ERROR_MAX_CHARS else text[:ERROR_MAX_CHARS] + "..."
+
+
+def _int_or_none(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 def _detail(usage: Any, container: str, field_name: str) -> int | None:
-    """Lê ``usage.<container>.<field_name>``. ``None`` quando o provedor não expõe o valor."""
     details = getattr(usage, container, None)
     value = getattr(details, field_name, None) if details is not None else None
-    return int(value) if isinstance(value, int) and not isinstance(value, bool) else None
+    return _int_or_none(value)
 
 
 def _provider_of(raw: Any) -> str | None:

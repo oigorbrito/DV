@@ -382,3 +382,210 @@ def test_workspace_root_is_resolved_once(tmp_path):
     assert executor.root == real.resolve()
     (real / "a.txt").write_text("hi\n", encoding="utf-8")
     assert executor.read_file("a.txt").ok
+
+
+# --- protocolo v2: ambiente (B6), auditoria bruta (A6), linhas (B7), CRLF (B8), byte nulo (B9) ---
+
+from dv_harness.tool_executor import ENV_ALLOWLIST, NON_INTERACTIVE_ENV, build_env, split_lines  # noqa: E402
+
+
+@posix_only
+def test_host_secrets_never_reach_the_subprocess(ex, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-leak-test-111")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-leak-222")
+    monkeypatch.setenv("DV_PROBE_KEY", "sk-probe-333")
+    r = ex.run_bash("env")
+    assert r.ok
+    for secret in ("sk-leak-test-111", "sk-ant-leak-222", "sk-probe-333", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+        assert secret not in r.raw_output, secret
+        assert secret not in r.output, secret
+
+
+@posix_only
+def test_allowlisted_and_non_interactive_vars_are_present(ex):
+    r = ex.run_bash("env")
+    names = {line.split("=", 1)[0] for line in r.raw_output.splitlines() if "=" in line}
+    # Variáveis que o próprio sh cria (não herdadas do host) são permitidas; o resto deve ser allowlist.
+    shell_generated = {"PWD", "OLDPWD", "SHLVL", "_"}
+    assert set(names) <= set(ENV_ALLOWLIST) | set(NON_INTERACTIVE_ENV) | shell_generated
+    assert "PATH" in names
+    assert "PIP_PROGRESS_BAR" in names and "TQDM_DISABLE" in names
+
+
+def test_build_env_is_strict_allowlist_plus_non_interactive():
+    env = build_env({"PATH": "/bin", "HOME": "/h", "OPENAI_API_KEY": "x", "SECRET": "y", "LANG": "C"})
+    assert set(env) == {"PATH", "HOME", "LANG"} | set(NON_INTERACTIVE_ENV)
+    assert env["PIP_PROGRESS_BAR"] == "off" and env["TQDM_DISABLE"] == "1"
+    assert env["PAGER"] == "cat" and env["MANPAGER"] == "cat" and env["GIT_PAGER"] == "cat" and env["LESS"] == "-R"
+
+
+def test_output_is_truncated_for_model_but_raw_is_complete(tmp_path):
+    small = ToolExecutor(tmp_path, max_output_chars=500)
+    raw_text = "A" * 3000 + "MIDDLE_MARKER" + "B" * 3000
+    (tmp_path / "big.txt").write_text(raw_text, encoding="utf-8")
+    r = small.read_file("big.txt")
+    assert r.truncated is True
+    assert len(r.output) <= 500
+    assert "MIDDLE_MARKER" in r.raw_output
+    assert "MIDDLE_MARKER" not in r.output
+
+
+@posix_only
+def test_bash_raw_output_keeps_the_elided_middle(tmp_path):
+    small = ToolExecutor(tmp_path, max_output_chars=300)
+    r = small.run_bash("printf 'HEAD'; python3 -c 'print(\"M\"*2000)'; printf 'TAIL'")
+    assert r.truncated is True
+    assert "HEAD" in r.raw_output and "TAIL" in r.raw_output and "M" * 2000 in r.raw_output
+    assert len(r.output) <= 300
+
+
+def test_split_lines_uses_only_newline():
+    assert split_lines("a\x0cb\nc\n") == ["a\x0cb", "c"]
+    assert split_lines("x") == ["x"]
+    assert split_lines("") == []
+    assert split_lines("\n") == [""]
+    assert split_lines("a\n\nb") == ["a", "", "b"]
+    assert split_lines("a b\n") == ["a b"]
+
+
+def test_read_file_numbering_matches_newline_count(tmp_path):
+    (tmp_path / "ff.txt").write_bytes(b"a\x0cb\nc\n")
+    r = ToolExecutor(tmp_path).read_file("ff.txt")
+    assert r.output == "1\ta\x0cb\n2\tc"
+    assert b"a\x0cb\nc\n".count(b"\n") == 2
+
+
+def test_edit_crlf_file_with_lf_old_text_succeeds_and_keeps_crlf(ex, tmp_path):
+    f = tmp_path / "crlf.py"
+    f.write_bytes(b"def f():\r\n    return 1\r\n")
+    r = ex.edit_file("crlf.py", "def f():\n    return 1", "def f():\n    return 2")
+    assert r.ok, r.error
+    assert f.read_bytes() == b"def f():\r\n    return 2\r\n"
+
+
+def test_edit_crlf_file_untouched_lines_are_byte_identical(ex, tmp_path):
+    f = tmp_path / "crlf2.txt"
+    f.write_bytes(b"keep\r\nchange me\r\nkeep too\r\n")
+    assert ex.edit_file("crlf2.txt", "change me", "changed").ok
+    assert f.read_bytes() == b"keep\r\nchanged\r\nkeep too\r\n"
+
+
+def test_edit_lf_file_behaviour_unchanged(ex, tmp_path):
+    f = tmp_path / "lf.txt"
+    f.write_bytes(b"one\ntwo\n")
+    assert ex.edit_file("lf.txt", "two", "2").ok
+    assert f.read_bytes() == b"one\n2\n"
+
+
+def test_edit_mixed_line_endings_keeps_bytes_exact(ex, tmp_path):
+    f = tmp_path / "mixed.txt"
+    f.write_bytes(b"a\r\nb\nc\r\n")
+    assert ex.edit_file("mixed.txt", "b", "B").ok
+    assert f.read_bytes() == b"a\r\nB\nc\r\n"
+
+
+def test_nul_byte_path_is_a_tool_result_not_an_exception(ex):
+    for r in (ex.read_file("a\x00b"), ex.write_file("a\x00b", "x"), ex.edit_file("a\x00b", "x", "y")):
+        assert r.ok is False
+        assert "NUL" in r.error
+
+
+@posix_only
+def test_nul_byte_cwd_is_a_tool_result(ex):
+    r = ex.run_bash("pwd", cwd="a\x00b")
+    assert r.ok is False and "NUL" in r.error
+
+
+def test_symlink_loop_is_a_tool_result(ex, tmp_path):
+    loop = tmp_path / "loop"
+    loop.symlink_to(loop)
+    r = ex.read_file("loop")
+    assert r.ok is False
+    assert r.error is not None
+
+
+@posix_only
+def test_timeout_keeps_raw_output(tmp_path):
+    small = ToolExecutor(tmp_path, max_output_chars=50)
+    r = small.run_bash("printf 'before'; sleep 5", timeout=1)
+    assert r.ok is False and r.exit_code is None
+    assert "before" in r.raw_output
+
+
+def test_name_too_long_is_a_tool_result_for_every_primitive(ex):
+    # ENAMETOOLONG: Path.exists/is_dir levantariam OSError. A sonda de _resolve torna isso ToolResult.
+    long_name = "a" * 3000
+    for r in (ex.read_file(long_name), ex.write_file(long_name, "x"), ex.edit_file(long_name, "x", "y")):
+        assert r.ok is False
+        assert r.error is not None
+
+
+# --- falhas de I/O viram ToolResult (contrato do módulo) --------------------------------
+
+import errno as _errno  # noqa: E402
+
+
+def _os_error(msg="disk on fire"):
+    return OSError(_errno.EIO, msg)
+
+
+def test_read_io_error_is_a_tool_result(ex, tmp_path, monkeypatch):
+    (tmp_path / "f.txt").write_text("x\n", encoding="utf-8")
+    monkeypatch.setattr(Path, "read_bytes", lambda self: (_ for _ in ()).throw(_os_error()))
+    r = ex.read_file("f.txt")
+    assert r.ok is False and "read failed" in r.error
+
+
+def test_write_io_error_is_a_tool_result(ex, monkeypatch):
+    monkeypatch.setattr(Path, "write_text", lambda self, *a, **k: (_ for _ in ()).throw(_os_error()))
+    r = ex.write_file("new.txt", "x")
+    assert r.ok is False and "write failed" in r.error
+
+
+def test_edit_read_and_write_io_errors_are_tool_results(ex, tmp_path, monkeypatch):
+    (tmp_path / "e.txt").write_text("abc\n", encoding="utf-8")
+    monkeypatch.setattr(Path, "read_bytes", lambda self: (_ for _ in ()).throw(_os_error()))
+    r1 = ex.edit_file("e.txt", "abc", "x")
+    assert r1.ok is False and "read failed" in r1.error
+    monkeypatch.undo()
+    monkeypatch.setattr(Path, "write_text", lambda self, *a, **k: (_ for _ in ()).throw(_os_error()))
+    r2 = ex.edit_file("e.txt", "abc", "x")
+    assert r2.ok is False and "write failed" in r2.error
+
+
+@posix_only
+def test_popen_failure_is_a_tool_result(ex, monkeypatch):
+    import subprocess as _sp
+
+    def boom(*a, **k):
+        raise OSError(_errno.ENOMEM, "cannot fork")
+
+    monkeypatch.setattr(_sp, "Popen", boom)
+    r = ex.run_bash("echo x")
+    assert r.ok is False and "could not start command" in r.error
+
+
+def test_truncate_rejects_negative_limit():
+    with pytest.raises(ValueError):
+        truncate_output("abc", -1)
+
+
+def test_kill_group_falls_back_to_kill_when_group_is_gone():
+    from dv_harness.tool_executor import _kill_group
+
+    class FakeProc:
+        pid = 999999999
+        killed = False
+
+        def kill(self):
+            self.killed = True
+
+    proc = FakeProc()
+    _kill_group(proc)  # killpg num pid inexistente -> ProcessLookupError -> kill()
+    assert proc.killed is True
+
+
+def test_decode_handles_none_and_str():
+    from dv_harness.tool_executor import _decode
+    assert _decode(None) == ""
+    assert _decode("já é texto") == "já é texto"

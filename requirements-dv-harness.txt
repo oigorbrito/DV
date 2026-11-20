@@ -1,3 +1,4 @@
-# Dependências do harness modular (Módulo 1: LLMClient). Versões fixadas para reprodutibilidade.
+# Dependências do harness modular (protocolo p1 v2). Versões fixadas para reprodutibilidade.
 litellm==1.110.1
 pytest==9.2.0
+hypothesis==6.170.16

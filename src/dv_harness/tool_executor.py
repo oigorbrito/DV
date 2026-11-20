@@ -1,43 +1,44 @@
 """ToolExecutor: 4 primitivas de ferramenta com retorno estruturado (Módulo 2).
 
 Primitivas: ``read_file``, ``write_file``, ``edit_file`` (search/replace exato) e ``run_bash``.
-Cada uma retorna ``ToolResult`` e nunca levanta exceção para falhas esperadas
-(arquivo ausente, binário, ``old_text`` ausente ou ambíguo, timeout, exit code != 0).
-Erros de programação, como tipos inválidos, ainda levantam exceção.
+Cada uma retorna ``ToolResult``. Falhas esperadas (arquivo ausente, binário, ``old_text``
+ausente ou ambíguo, timeout, exit code != 0, caminho inválido ou fora do workspace) viram
+``ToolResult(ok=False)``. Erros de programação ainda levantam exceção.
 
-Este módulo não contém loop de agente, política de decisão nem gerenciamento de
-contexto (Módulos 3 e 4, ainda não implementados).
+Dois textos por resultado (protocolo p1 v2, A6):
+- ``output``: versão truncada, que vai para o modelo.
+- ``raw_output``: saída completa, sem truncamento, que vai para o registro de auditoria.
 
-Trava de workspace: os parâmetros ``path`` das primitivas de arquivo e ``cwd`` do
-``run_bash`` são resolvidos com ``.resolve()`` (seguindo links simbólicos) e precisam ficar
-dentro de ``root``. Caso contrário, a primitiva devolve ``ToolResult(ok=False)``. Essa trava
-não é um sandbox. O texto de um comando ``run_bash`` pode acessar qualquer caminho do
-sistema, por exemplo com ``cat /etc/passwd``. Por isso o benchmark deve rodar em workspace
-isolado (container ou worktree descartável). Restringir o que o agente pode fazer continua
-sendo responsabilidade do ambiente que o executa.
+Ambiente do subprocesso (B6): allowlist estrita. Nenhuma variável do host fora da allowlist
+chega ao comando, inclusive chaves de API. Ver ``ENV_ALLOWLIST``.
+
+Trava de workspace: ``path`` e ``cwd`` são resolvidos com ``.resolve()`` (seguindo links
+simbólicos) e precisam ficar dentro de ``root``. Byte nulo e caminhos que não resolvem
+também viram ``ToolResult(ok=False)``.
+
+Não é sandbox. O texto de um ``run_bash`` pode acessar qualquer caminho do sistema
+(``cat /etc/passwd``). O benchmark deve rodar em workspace isolado (container ou worktree).
 
 Atribuições empíricas
 ---------------------
-- Conjunto de 4 primitivas (``read``, ``write``, ``edit``, ``bash``): baseado no
-  ``earendil-works/pi`` (https://github.com/earendil-works/pi), cujo conjunto padrão de
-  ferramentas é exatamente esse. Fonte: resumo de busca, não leitura direta do repositório.
-- ``run_bash`` stateless via ``subprocess`` (``Popen`` em grupo próprio, com ``killpg``
-  no timeout), cada ação independente, sem shell persistente: baseado no
-  ``SWE-agent/mini-swe-agent``
-  (https://github.com/SWE-agent/mini-swe-agent). Verificado no README do repositório.
-  Variáveis anti-travamento (``PAGER=cat``, ``MANPAGER=cat``, ``LESS=-R``) e timeout
-  padrão de 30 s verificados em ``src/minisweagent/config/default.yaml`` e
-  ``src/minisweagent/environments/local.py``. A FAQ oficial não foi lida.
-- Edição por ``search/replace`` exato em vez de reescrita integral: alinhado às notas do
-  Aider (https://aider.chat/docs/leaderboards/notes.html), que descrevem o formato
-  "whole" como fácil, mas caro em tokens. O benchmark Diff-XYZ
-  (https://arxiv.org/abs/2510.12487) indica que o desempenho de search/replace depende do
-  tamanho do modelo. O artigo não foi lido diretamente (acesso bloqueado nesta sessão). A
-  escolha aqui se apoia em segurança (falha com ambiguidade), não em superioridade
-  demonstrada.
-- Feedback estruturado, conciso e com truncamento de saída (ACI): princípio do paper
-  SWE-agent (NeurIPS 2024, https://arxiv.org/abs/2405.15793). O paper não foi lido
-  diretamente. O limite de 10.000 caracteres é escolha deste módulo, não valor citado.
+- Conjunto de 4 primitivas: ``earendil-works/pi`` (https://github.com/earendil-works/pi),
+  ``dist/core/tools/index.js:17`` (conjunto completo de 7 nomes). Este módulo expõe
+  ``read``, ``bash``, ``edit`` e ``write``.
+- ``run_bash`` stateless com ``Popen`` em grupo próprio e ``killpg`` no timeout:
+  ``SWE-agent/mini-swe-agent`` (https://github.com/SWE-agent/mini-swe-agent),
+  ``src/minisweagent/environments/local.py:74-91``. Timeout padrão de 30 s em ``local.py:16``.
+- Variáveis não interativas (``PAGER``, ``MANPAGER``, ``LESS``, ``PIP_PROGRESS_BAR``,
+  ``TQDM_DISABLE``): ``config/default.yaml:107-112`` do mini.
+- Saída completa preservada: ``pi`` grava em arquivo temporário
+  (``dist/core/tools/output-accumulator.js:87-93``) e o mini em ``extra.raw_output``
+  (``models/utils/actions_toolcall.py:98``).
+- Truncamento de saída: limite por caracteres, cabeça e cauda. Referência: mini
+  ``default.yaml:119-140`` e pi ``truncate.js:10-11``. Ver divergências em ``docs/ARCHITECTURE.md``.
+- Substituição exata com contagem única: alinhada ao ``pi`` (``edit.js:12-14``), sem busca fuzzy
+  (fuzzy e multi-edit ficam para ablação futura).
+- Normalização de fim de linha: ``pi`` ``edit-diff.js:8-22``. Este módulo normaliza só
+  arquivos inteiramente CRLF, para não alterar linhas que o edit não toca.
+- SWE-agent (NeurIPS 2024, https://arxiv.org/abs/2405.15793): feedback conciso e truncamento.
 """
 
 from __future__ import annotations
@@ -53,17 +54,26 @@ DEFAULT_MAX_OUTPUT_CHARS = 10_000
 DEFAULT_TIMEOUT_S = 30
 _BINARY_PROBE_BYTES = 8192
 
-# Variáveis que impedem paginadores e ferramentas interativas de travar a execução.
-_NON_INTERACTIVE_ENV = {
+# Única fonte de variáveis herdadas do host pelo subprocesso (B6). Sem chaves de API.
+ENV_ALLOWLIST: tuple[str, ...] = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TERM", "USER")
+
+# Variáveis não interativas (default.yaml:107-112 do mini, mais GIT_PAGER).
+NON_INTERACTIVE_ENV: dict[str, str] = {
     "PAGER": "cat",
     "MANPAGER": "cat",
     "GIT_PAGER": "cat",
     "LESS": "-R",
+    "PIP_PROGRESS_BAR": "off",
+    "TQDM_DISABLE": "1",
 }
 
 
-class WorkspaceEscapeError(ValueError):
-    """Caminho ou ``cwd`` fora do ``root`` do executor."""
+class PathError(ValueError):
+    """Caminho ou ``cwd`` inválido para o workspace (byte nulo, não resolve, fora da raiz)."""
+
+
+class WorkspaceEscapeError(PathError):
+    """Caminho ou ``cwd`` resolvido fora de ``root``."""
 
 
 @dataclass(frozen=True)
@@ -73,19 +83,16 @@ class ToolResult:
     error: str | None = None
     exit_code: int | None = None
     truncated: bool = False
+    raw_output: str = ""
 
 
 def truncate_output(text: str, limit: int) -> tuple[str, bool]:
-    """Limita ``text`` a ``limit`` caracteres, mantendo início e fim.
-
-    Retorna ``(texto, truncado)``. O marcador conta dentro do limite.
-    """
+    """Limita ``text`` a ``limit`` caracteres, mantendo início e fim. O marcador conta no limite."""
     if limit < 0:
         raise ValueError("limit must be >= 0")
     if len(text) <= limit:
         return text, False
     marker_template = "\n[... {omitted} caracteres omitidos ...]\n"
-    # Espaço reservado para o marcador com número de dígitos de pior caso.
     reserve = len(marker_template.format(omitted=len(text)))
     if limit <= reserve:
         return text[:limit], True
@@ -95,6 +102,27 @@ def truncate_output(text: str, limit: int) -> tuple[str, bool]:
     omitted = len(text) - head - tail
     marker = marker_template.format(omitted=omitted)
     return text[:head] + marker + (text[-tail:] if tail else ""), True
+
+
+def split_lines(text: str) -> list[str]:
+    """Divide estritamente em ``\\n``. Não usa ``splitlines()``, que quebra em \\x0c, \\x0b, \\u2028 etc.
+
+    Um ``\\n`` final não gera linha vazia, como no ``grep -n`` e nos editores.
+    """
+    if text == "":
+        return []
+    parts = text.split("\n")
+    if text.endswith("\n"):
+        parts = parts[:-1]
+    return parts
+
+
+def build_env(source: dict[str, str] | None = None) -> dict[str, str]:
+    """Ambiente do subprocesso: só a allowlist do host, mais as variáveis não interativas."""
+    host = os.environ if source is None else source
+    env = {k: host[k] for k in ENV_ALLOWLIST if k in host}
+    env.update(NON_INTERACTIVE_ENV)
+    return env
 
 
 class ToolExecutor:
@@ -110,15 +138,24 @@ class ToolExecutor:
         self.max_output_chars = max_output_chars
 
     def _resolve(self, path: str) -> Path:
-        """Resolve ``path`` contra ``root``, seguindo links simbólicos.
-
-        Levanta ``WorkspaceEscapeError`` se o alvo ficar fora de ``root``. Os métodos
-        públicos convertem isso em ``ToolResult(ok=False)`` para o modelo se recuperar.
-        """
+        """Resolve ``path`` contra ``root``. Levanta ``PathError`` (ou subclasse) se inválido."""
+        if "\x00" in path:
+            raise PathError("invalid path: contains NUL byte")
         p = Path(path)
-        candidate = (p if p.is_absolute() else self.root / p).resolve()
+        try:
+            candidate = (p if p.is_absolute() else self.root / p).resolve()
+        except (OSError, RuntimeError) as exc:  # loop de link simbólico, etc.
+            raise PathError(f"path cannot be resolved: {path}: {exc}") from exc
         if candidate != self.root and not candidate.is_relative_to(self.root):
             raise WorkspaceEscapeError(f"path escapes workspace root: {path}")
+        # Path.exists/is_file levantam OSError para ENAMETOOLONG e ENOTDIR. Sondar aqui torna
+        # essas falhas ToolResult, e não exceção. Ausência (FileNotFoundError) é normal.
+        try:
+            os.stat(candidate)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise PathError(f"path is not usable: {path}: {exc.strerror or exc}") from exc
         return candidate
 
     # --- read_file -----------------------------------------------------------
@@ -129,7 +166,7 @@ class ToolExecutor:
         start_line: int | None = None,
         end_line: int | None = None,
     ) -> ToolResult:
-        """Lê arquivo texto. Linhas são 1-based e inclusivas, com numeração ``N\\tlinha``."""
+        """Lê arquivo texto. Linhas são 1-based e inclusivas, numeradas ``N\\tlinha``."""
         if start_line is not None and start_line < 1:
             return ToolResult(ok=False, error="start_line must be >= 1")
         if end_line is not None and start_line is not None and end_line < start_line:
@@ -137,7 +174,7 @@ class ToolExecutor:
 
         try:
             target = self._resolve(path)
-        except WorkspaceEscapeError as exc:
+        except PathError as exc:
             return ToolResult(ok=False, error=str(exc))
         if not target.exists():
             return ToolResult(ok=False, error=f"file not found: {path}")
@@ -156,14 +193,14 @@ class ToolExecutor:
         except UnicodeDecodeError:
             return ToolResult(ok=False, error=f"not valid UTF-8 text: {path}")
 
-        lines = text.splitlines()
+        lines = split_lines(text)
         first = (start_line or 1) - 1
         last = len(lines) if end_line is None else min(end_line, len(lines))
         if first > len(lines) and lines:
             return ToolResult(ok=False, error=f"start_line {start_line} beyond end of file ({len(lines)} lines)")
         numbered = "\n".join(f"{i + 1}\t{lines[i]}" for i in range(first, last))
         out, truncated = truncate_output(numbered, self.max_output_chars)
-        return ToolResult(ok=True, output=out, truncated=truncated)
+        return ToolResult(ok=True, output=out, truncated=truncated, raw_output=numbered)
 
     # --- write_file ----------------------------------------------------------
 
@@ -171,26 +208,31 @@ class ToolExecutor:
         """Cria ou sobrescreve arquivo texto UTF-8, criando diretórios pai se necessário."""
         try:
             target = self._resolve(path)
-        except WorkspaceEscapeError as exc:
+        except PathError as exc:
             return ToolResult(ok=False, error=str(exc))
         if target.is_dir():
             return ToolResult(ok=False, error=f"is a directory: {path}")
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8")
+            target.write_text(content, encoding="utf-8", newline="")
         except OSError as exc:
             return ToolResult(ok=False, error=f"write failed: {exc.strerror or exc}")
-        return ToolResult(ok=True, output=f"wrote {len(content.encode('utf-8'))} bytes to {path}")
+        message = f"wrote {len(content.encode('utf-8'))} bytes to {path}"
+        return ToolResult(ok=True, output=message, raw_output=message)
 
     # --- edit_file -----------------------------------------------------------
 
     def edit_file(self, path: str, old_text: str, new_text: str) -> ToolResult:
-        """Substitui ``old_text`` por ``new_text``. Falha se não existir ou aparecer mais de uma vez."""
+        """Substitui ``old_text`` por ``new_text``. Falha se não existir ou aparecer mais de uma vez.
+
+        Arquivo inteiramente CRLF: ``old_text`` e ``new_text`` são normalizados para LF na busca
+        e o fim de linha CRLF é restaurado no resultado. Arquivo misto ou LF: busca exata.
+        """
         if not old_text:
             return ToolResult(ok=False, error="old_text must not be empty")
         try:
             target = self._resolve(path)
-        except WorkspaceEscapeError as exc:
+        except PathError as exc:
             return ToolResult(ok=False, error=str(exc))
         if not target.is_file():
             return ToolResult(ok=False, error=f"file not found: {path}")
@@ -205,19 +247,15 @@ class ToolExecutor:
         except UnicodeDecodeError:
             return ToolResult(ok=False, error=f"not valid UTF-8 text: {path}")
 
-        count = text.count(old_text)
-        if count == 0:
-            return ToolResult(ok=False, error=f"old_text not found in {path}")
-        if count > 1:
-            return ToolResult(
-                ok=False,
-                error=f"old_text is ambiguous: {count} occurrences in {path}; include more context",
-            )
+        updated, problem = _apply_unique_replacement(text, old_text, new_text, path)
+        if problem is not None:
+            return problem
         try:
-            target.write_text(text.replace(old_text, new_text, 1), encoding="utf-8")
+            target.write_text(updated, encoding="utf-8", newline="")
         except OSError as exc:
             return ToolResult(ok=False, error=f"write failed: {exc.strerror or exc}")
-        return ToolResult(ok=True, output=f"edited {path}")
+        message = f"edited {path}"
+        return ToolResult(ok=True, output=message, raw_output=message)
 
     # --- run_bash ------------------------------------------------------------
 
@@ -233,14 +271,10 @@ class ToolExecutor:
         if cwd is not None:
             try:
                 workdir = self._resolve(str(cwd))
-            except WorkspaceEscapeError as exc:
+            except PathError as exc:
                 return ToolResult(ok=False, error=str(exc))
         else:
             workdir = self.root
-        env = {**os.environ, **_NON_INTERACTIVE_ENV}
-        # Popen em sessão própria para poder matar o grupo inteiro no timeout.
-        # Com subprocess.run, filhos em background (ex.: "sleep 30 & sleep 30") sobreviviam
-        # ao timeout como processos órfãos. Medido nesta sessão antes da mudança.
         try:
             proc = subprocess.Popen(
                 command,
@@ -248,7 +282,7 @@ class ToolExecutor:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 cwd=str(workdir),
-                env=env,
+                env=build_env(),
                 start_new_session=True,
             )
         except OSError as exc:
@@ -259,14 +293,15 @@ class ToolExecutor:
         except subprocess.TimeoutExpired:
             _kill_group(proc)
             stdout, stderr = proc.communicate()
-            partial = _decode(stdout) + _decode(stderr)
-            out, truncated = truncate_output(partial, self.max_output_chars)
+            full = _decode(stdout) + _decode(stderr)
+            out, truncated = truncate_output(full, self.max_output_chars)
             return ToolResult(
                 ok=False,
                 output=out,
                 error=f"timeout after {timeout}s",
                 exit_code=None,
                 truncated=truncated,
+                raw_output=full,
             )
 
         combined = _decode(stdout)
@@ -281,8 +316,36 @@ class ToolExecutor:
             error=None if ok else f"exit code {proc.returncode}",
             exit_code=proc.returncode,
             truncated=truncated,
+            raw_output=combined,
         )
 
+
+
+def _apply_unique_replacement(text: str, old_text: str, new_text: str, path: str) -> tuple[str | None, ToolResult | None]:
+    """Aplica a substituição única. Devolve ``(texto_novo, None)`` ou ``(None, erro)``.
+
+    Arquivo inteiramente CRLF: busca e substituição em LF, com CRLF restaurado no resultado.
+    """
+    crlf = text.count("\r\n")
+    pure_crlf = crlf > 0 and text.count("\n") == crlf
+    if pure_crlf:
+        body = text.replace("\r\n", "\n")
+        needle = old_text.replace("\r\n", "\n")
+        replacement = new_text.replace("\r\n", "\n")
+    else:
+        body, needle, replacement = text, old_text, new_text
+    count = body.count(needle)
+    if count == 0:
+        return None, ToolResult(ok=False, error=f"old_text not found in {path}")
+    if count > 1:
+        return None, ToolResult(
+            ok=False,
+            error=f"old_text is ambiguous: {count} occurrences in {path}; include more context",
+        )
+    updated = body.replace(needle, replacement, 1)
+    if pure_crlf:
+        updated = updated.replace("\n", "\r\n")
+    return updated, None
 
 def _kill_group(proc: subprocess.Popen[bytes]) -> None:
     """Mata o grupo de processos do comando (POSIX). Ignora se já terminou."""
