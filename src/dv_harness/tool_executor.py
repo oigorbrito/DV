@@ -172,6 +172,36 @@ def _crlf_normalised(text: str, old_text: str, new_text: str) -> tuple[bool, str
     return False, text, old_text, new_text
 
 
+def _min_indent(bodies: list[str]) -> int | None:
+    """Menor recuo, em espaços, das linhas não vazias. ``None`` se todas estão vazias."""
+    indents = [len(b) - len(b.lstrip(" ")) for b in bodies if b.strip()]
+    return min(indents) if indents else None
+
+
+def _reindent_block(new: str, target: int) -> str:
+    """Desloca ``new`` para que seu menor recuo seja ``target``, preservando a estrutura interna.
+
+    O deslocamento é ``target - recuo_de_new``. Quando ``new`` já está no recuo do arquivo, nada muda (sem
+    deslocamento duplo). Para deslocamento negativo, só se remove espaço à esquerda, nunca código. Linhas
+    vazias ficam como estão. Vazio fica vazio (remoção limpa). Terminadores de linha são preservados.
+    """
+    elements = _elements(new)
+    bodies = [_strip_terminator(e) for e in elements]
+    base = _min_indent(bodies)
+    if base is None or base == target:
+        return new
+    shift = target - base
+    out = []
+    for element, body in zip(elements, bodies, strict=True):
+        if body.strip():
+            if shift > 0:
+                body = " " * shift + body
+            else:
+                body = body[min(-shift, len(body) - len(body.lstrip(" "))):]
+        out.append(body + ("\n" if element.endswith("\n") else ""))
+    return "".join(out)
+
+
 def _apply_edit_with_fallback(text: str, old_text: str, new_text: str, path: str
                               ) -> tuple[str | None, str | None, ToolResult | None]:
     """Substituição única em 3 estágios (b0_plus): exact, line_trimmed, indentation_flexible.
@@ -198,7 +228,9 @@ def _apply_edit_with_fallback(text: str, old_text: str, new_text: str, path: str
                 i, k = windows[0]
                 elems = _elements(body)
                 ends_nl = elems[i + k - 1].endswith("\n")
-                updated = "".join(elems[:i]) + _fit_terminator(new, ends_nl) + "".join(elems[i + k:])
+                target = _min_indent([_strip_terminator(e) for e in elems[i:i + k]])
+                block = _reindent_block(new, target) if name == "indentation_flexible" and target is not None else new
+                updated = "".join(elems[:i]) + _fit_terminator(block, ends_nl) + "".join(elems[i + k:])
                 stage = name
                 break
         if updated is None:

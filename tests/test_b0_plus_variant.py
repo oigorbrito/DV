@@ -43,11 +43,12 @@ def test_stage_line_trimmed_matches_trailing_whitespace():
     assert updated == "x = 9\ny = 2\n"
 
 
-def test_stage_indentation_flexible_matches_wrong_indentation_and_writes_new_text_verbatim():
+def test_stage_indentation_flexible_matches_wrong_indentation_and_reindents_new_text():
+    # Arquivo com recuo 4; o modelo enviou old e new sem recuo. O bloco novo sobe para o recuo do arquivo.
     text = "    if a:\n        b()\n"
     updated, stage, err = _apply_edit_with_fallback(text, "if a:\n    b()\n", "if a:\n    c()\n", "f.py")
     assert err is None and stage == "indentation_flexible"
-    assert updated == "if a:\n    c()\n"  # sem re-indentação: o texto novo é gravado como veio
+    assert updated == "    if a:\n        c()\n"
 
 
 def test_ambiguous_exact_match_is_rejected_with_clear_error(tmp_path):
@@ -209,10 +210,33 @@ def test_unknown_harness_variant_is_rejected():
 # --- (d) DoomLoopTracker: disparo exato na 3ª idêntica consecutiva --------------------
 
 
-def test_doom_loop_fires_exactly_on_third_identical_call():
+def test_doom_loop_fires_from_third_identical_call_and_keeps_firing():
     tracker = DoomLoopTracker(threshold=3)
     results = [tracker.observe("run_bash", '{"command": "ls"}') for _ in range(5)]
-    assert results == [False, False, True, False, False]  # uma vez por sequência
+    assert results == [False, False, True, True, True]  # 3ª, 4ª e 5ª repetição
+
+
+def test_doom_loop_streak_counts_current_repetition():
+    tracker = DoomLoopTracker(threshold=3)
+    seen = []
+    for _ in range(4):
+        tracker.observe("run_bash", '{"command": "ls"}')
+        seen.append(tracker.streak)
+    assert seen == [1, 2, 3, 4]
+
+
+def test_advisory_reports_the_current_count_on_third_fourth_and_fifth_repetition(tmp_path):
+    cmd = {"command": "echo same"}
+    llm = ScriptedLLM([make_response(calls=[call(f"r{i}", "run_bash", cmd)]) for i in range(5)]
+                      + [make_response(calls=[submit("s1", "done")])])
+    result = AgentLoop(llm, _executor(tmp_path), ContextManager(keep_recent_observations=10, harness_variant=B0_PLUS),
+                       harness_variant=B0_PLUS).run("t", "s", max_steps=10)
+    assert result.status == p.STATUS_COMPLETED and result.protocol_errors == 0
+    contents = [m["content"] for m in llm.calls[-1]["messages"] if m.get("role") == "tool"]
+    assert "[SYSTEM ADVISORY]" not in contents[0] and "[SYSTEM ADVISORY]" not in contents[1]
+    for position, count in ((2, 3), (3, 4), (4, 5)):
+        assert f"repeated {count} times in a row" in contents[position]
+    assert "[SYSTEM ADVISORY]" not in result.tool_events[4].raw_output  # ledger bruto intocado
 
 
 def test_doom_loop_ignores_key_order_in_arguments():
@@ -314,3 +338,84 @@ def test_reference_provenance_has_hashes_and_marks_codex_inconclusive():
         assert prov[key]["status"] == "LOCAL_CHECKOUT_DIRTY"  # hash sozinho não reproduz o conteúdo lido
     assert prov["codex_cli"]["status"] == "INCONCLUSIVE_NOT_LOCATED"
     assert prov["codex_cli"]["head"] is None
+
+
+# --- re-indentação relativa no estágio indentation_flexible (b0_plus) -------------------
+
+FILE_NESTED_AT_8 = (
+    "class C:\n"
+    "    def run(self):\n"
+    "        if x:\n"
+    "            for i in y:\n"
+    "                do(i)\n"
+    "        return 0\n"
+)
+
+
+def test_indentation_flexible_shifts_new_text_when_old_and_new_are_both_misaligned(tmp_path):
+    # Bloco aninhado no arquivo com recuo 8; o modelo enviou old e new com recuo 4 (os dois desalinhados).
+    old = "    if x:\n        for i in y:\n            do(i)\n"
+    new = "    if x:\n        for i in y:\n            do(i, 2)\n"
+    updated, stage, err = _apply_edit_with_fallback(FILE_NESTED_AT_8, old, new, "f.py")
+    assert err is None and stage == "indentation_flexible"
+    assert updated == FILE_NESTED_AT_8.replace("                do(i)\n", "                do(i, 2)\n")
+    # sub-bloco preservado: 'for' continua 4 espaços à direita de 'if'; 'do' continua 4 à direita de 'for'
+    assert "        if x:\n            for i in y:\n                do(i, 2)\n" in updated
+
+
+def test_indentation_flexible_does_not_double_indent_when_new_text_is_already_aligned(tmp_path):
+    old = "    if x:\n        for i in y:\n            do(i)\n"  # desalinhado
+    new = "        if x:\n            for i in y:\n                do(i, 2)\n"  # já no recuo do arquivo
+    updated, stage, err = _apply_edit_with_fallback(FILE_NESTED_AT_8, old, new, "f.py")
+    assert err is None and stage == "indentation_flexible"
+    assert "                do(i, 2)\n" in updated and "                    do(i, 2)" not in updated
+    assert "        if x:\n            for i in y:\n                do(i, 2)\n" in updated
+
+
+def test_indentation_flexible_shifts_left_without_cutting_code():
+    file_text = "def f():\n    if a:\n        b()\n"
+    old = "        if a:\n            b()\n"  # desalinhado para a direita (recuo 8, arquivo tem 4)
+    new = "        if a:\n            c()\n"
+    updated, stage, _ = _apply_edit_with_fallback(file_text, old, new, "f.py")
+    assert stage == "indentation_flexible"
+    assert updated == "def f():\n    if a:\n        c()\n"
+
+
+def test_reindent_never_removes_non_space_characters():
+    from dv_harness.tool_executor import _reindent_block
+
+    assert _reindent_block("  x\n y\n", 0) == " x\ny\n"  # mínimo 1 -> 0; só espaços saem, diferença relativa mantida
+    assert _reindent_block("    a\n\n    b\n", 0) == "a\n\nb\n"  # linha vazia preservada como está
+
+
+def test_reindent_keeps_empty_new_text_as_clean_removal():
+    from dv_harness.tool_executor import _reindent_block
+
+    assert _reindent_block("", 4) == ""
+
+
+def test_indentation_flexible_removal_is_clean(tmp_path):
+    text = "a = 1\n    b = 2\n    c = 3\nd = 4\n"
+    updated, stage, err = _apply_edit_with_fallback(text, "b = 2\nc = 3\n", "", "f.py")
+    assert err is None and updated == "a = 1\nd = 4\n"
+
+
+def test_indentation_flexible_preserves_crlf_and_missing_final_newline(tmp_path):
+    (tmp_path / "f.py").write_bytes(b"    def f():\r\n        return 1\r\n")
+    result = _executor(tmp_path).edit_file("f.py", "def f():\n    return 1\n", "def f():\n    return 2\n")
+    assert result.ok is True
+    assert (tmp_path / "f.py").read_bytes() == b"    def f():\r\n        return 2\r\n"
+
+
+def test_indentation_flexible_no_final_newline_stays_without_it(tmp_path):
+    (tmp_path / "f.py").write_bytes(b"    def f():\n        return 1")
+    result = _executor(tmp_path).edit_file("f.py", "def f():\n    return 1", "def f():\n    return 2")
+    assert result.ok is True
+    assert (tmp_path / "f.py").read_bytes() == b"    def f():\n        return 2"
+
+
+def test_b0_does_not_reindent_in_indentation_flexible_mode(tmp_path):
+    (tmp_path / "f.py").write_text(FILE_NESTED_AT_8, encoding="utf-8")
+    miss = ToolExecutor(tmp_path).edit_file("f.py", "    if x:\n        for i in y:\n            do(i)\n",
+                                            "    if x:\n        for i in y:\n            do(i, 2)\n")
+    assert miss.ok is False and "not found" in miss.error  # b0 não tem o estágio de indentação

@@ -277,8 +277,8 @@ def _canonical_arguments(arguments: str) -> str:
 class DoomLoopTracker:
     """Repetição consecutiva idêntica de (ferramenta, argumentos canônicos).
 
-    ``observe`` devolve ``True`` exatamente quando a sequência atual chega ao limiar. Cada sequência
-    dispara uma vez. Mudar a ferramenta ou os argumentos reinicia a contagem. Não olha a saída:
+    ``observe`` devolve ``True`` a partir do limiar: na 3ª, 4ª, 5ª... repetição consecutiva idêntica.
+    Mudar a ferramenta ou os argumentos reinicia a contagem. Não olha a saída:
     o critério é o comportamento do agente, não o resultado.
     """
 
@@ -296,7 +296,12 @@ class DoomLoopTracker:
         else:
             self._signature = signature
             self._streak = 1
-        return self._streak == self.threshold
+        return self._streak >= self.threshold
+
+    @property
+    def streak(self) -> int:
+        """Repetições consecutivas da sequência atual (inclui a última chamada observada)."""
+        return self._streak
 
 
 class AgentLoop:
@@ -423,7 +428,7 @@ class AgentLoop:
             state.tool_events.append(event)
             observation = dispatch.observation
             if state.doom is not None and state.doom.observe(call.name, call.arguments):
-                advisory = SYSTEM_ADVISORY.format(name=call.name, count=state.doom.threshold)
+                advisory = SYSTEM_ADVISORY.format(name=call.name, count=state.doom.streak)
                 observation = f"{observation}\n{advisory}" if observation else advisory
             observations[call.id] = observation  # ToolEvent.observation e o ledger ficam intactos
             kinds.append(dispatch.kind)
