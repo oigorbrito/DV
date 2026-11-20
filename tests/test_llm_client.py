@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import httpx
+import litellm
 import pytest
 
 from support import ROOT  # noqa: F401
@@ -326,3 +328,97 @@ def test_output_tokens_none_when_completion_not_exposed():
     usage = SimpleNamespace(prompt_tokens=10, completion_tokens=None, total_tokens=None)
     resp = _client(lambda **_: _raw(content="ok", usage_obj=usage)).complete(MESSAGES)
     assert resp.output_tokens is None
+
+
+# --- timeout explícito por requisição (hang HTTP não pode travar a chamada) -------------
+
+
+def test_request_timeout_is_forwarded_to_completion_by_default():
+    seen = []
+
+    def fake(**kwargs):
+        seen.append(kwargs)
+        return _raw(content="ok")
+
+    client = _client(fake)
+    client.complete(MESSAGES)
+    assert seen[0]["timeout"] == 60.0
+
+
+def test_request_timeout_custom_value_is_forwarded_and_none_omits_it():
+    seen = []
+
+    def fake(**kwargs):
+        seen.append(kwargs)
+        return _raw(content="ok")
+
+    LLMClient(default_model="m", completion_fn=fake, cost_fn=lambda **_: 0.0,
+              request_timeout_s=7.5).complete(MESSAGES)
+    LLMClient(default_model="m", completion_fn=fake, cost_fn=lambda **_: 0.0,
+              request_timeout_s=None).complete(MESSAGES)
+    assert seen[0]["timeout"] == 7.5
+    assert "timeout" not in seen[1]
+
+
+@pytest.mark.parametrize("bad", [0, -1.0])
+def test_request_timeout_must_be_positive(bad):
+    with pytest.raises(ValueError):
+        LLMClient(default_model="m", completion_fn=lambda **_: _raw(), request_timeout_s=bad)
+
+
+def test_timeout_in_default_params_conflicts_with_request_timeout():
+    with pytest.raises(ValueError):
+        LLMClient(default_model="m", completion_fn=lambda **_: _raw(), timeout=5)
+    # Com request_timeout_s=None, o parâmetro de provedor passa sem conflito.
+    client = LLMClient(default_model="m", completion_fn=lambda **_: _raw(), request_timeout_s=None, timeout=5)
+    assert client.request_timeout_s is None
+
+
+def test_config_snapshot_exposes_request_timeout_and_retry_policy():
+    client = _client(lambda **_: _raw(), retry=RetryPolicy(max_attempts=3))
+    snap = client.config_snapshot()
+    assert snap["request_timeout_s"] == 60.0
+    assert snap["default_model"] == "fake/model"
+    assert snap["retry_policy"]["max_attempts"] == 3
+    assert "api_key" not in str(snap).lower()
+
+
+def test_litellm_timeout_is_retried_then_succeeds_with_both_attempts_recorded():
+    calls = {"n": 0}
+
+    def fake(**_):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise litellm.Timeout(message="request timed out", model="fake/model", llm_provider="gemini")
+        return _raw(content="ok")
+
+    sleeps: list[float] = []
+    resp = _client(fake, sleeps=sleeps).complete(MESSAGES)
+    assert [a.outcome for a in resp.attempts] == ["error", "ok"]
+    assert resp.attempts[0].error_type == "Timeout"
+    assert resp.attempts[0].retryable is True
+    assert resp.attempts[0].backoff_s == 1.0
+    assert sleeps == [1.0]
+
+
+def test_httpx_read_timeout_is_retryable():
+    policy = RetryPolicy()
+    assert policy.is_retryable(httpx.ReadTimeout("read timed out")) is True
+    assert policy.is_retryable(litellm.Timeout(message="t", model="m", llm_provider="p")) is True
+
+
+def test_exhausted_timeouts_close_the_call_with_every_attempt_retryable():
+    def fake(**_):
+        raise httpx.ReadTimeout("hang")
+
+    sleeps: list[float] = []
+    with pytest.raises(LLMCallFailed) as info:
+        _client(fake, retry=RetryPolicy(max_attempts=3, base_delay_s=1.0, multiplier=2.0), sleeps=sleeps).complete(
+            MESSAGES)
+    failed = info.value
+    assert len(failed.attempts) == 3
+    assert all(a.outcome == "error" and a.retryable is True for a in failed.attempts)
+    assert [a.backoff_s for a in failed.attempts] == [1.0, 2.0, None]  # sem espera após a última
+    assert sleeps == [1.0, 2.0]
+    assert isinstance(failed.cause, httpx.ReadTimeout)
+    assert failed.wall_clock_ms >= 0

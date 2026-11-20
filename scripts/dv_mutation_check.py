@@ -288,6 +288,15 @@ MUTANTS: tuple[Mutant, ...] = (
            "        pass_env=list(pass_env),",
            '        pass_env=[os.environ.get(v, "") for v in pass_env],',
            "ledger records the secret value of --pass-env instead of the name", T_CONT),
+    # --- timeout explícito por requisição (hang HTTP) ------------------------------
+    Mutant("M58", f"{SRC}/llm_client.py",
+           '            kwargs["timeout"] = self.request_timeout_s  # sem isto, um hang HTTP não levanta exceção',
+           '            pass  # timeout not forwarded',
+           "request timeout not forwarded to litellm (hang never raises)", T_LLM),
+    Mutant("M59", f"{SRC}/llm_client.py",
+           "        if isinstance(exc, TRANSIENT_TIMEOUT_EXCEPTIONS):\n            return True",
+           "        if isinstance(exc, TRANSIENT_TIMEOUT_EXCEPTIONS):\n            return False",
+           "timeouts treated as non-retryable (ledger closes on first hang)", T_LLM),
 )
 
 

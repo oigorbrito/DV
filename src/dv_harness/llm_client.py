@@ -43,6 +43,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+import httpx
 import litellm
 from litellm.exceptions import (
     AuthenticationError,
@@ -73,6 +74,11 @@ ABORT_EXCEPTIONS: tuple[type[BaseException], ...] = (
     AuthenticationError,
 )
 
+# Timeouts de rede são transitórios: sempre retentáveis, mesmo se a lista de abortos crescer.
+# Sem timeout explícito, um hang HTTP nunca levanta exceção e nunca chega à política (ver request_timeout_s).
+TRANSIENT_TIMEOUT_EXCEPTIONS: tuple[type[BaseException], ...] = (litellm.Timeout, httpx.TimeoutException)
+DEFAULT_REQUEST_TIMEOUT_S = 60.0
+
 ERROR_MAX_CHARS = 300
 
 
@@ -93,6 +99,8 @@ class RetryPolicy:
             raise ValueError("invalid backoff parameters")
 
     def is_retryable(self, exc: BaseException) -> bool:
+        if isinstance(exc, TRANSIENT_TIMEOUT_EXCEPTIONS):
+            return True
         return not isinstance(exc, self.abort_on)
 
     def delay_for(self, failed_attempt: int) -> float:
@@ -201,14 +209,29 @@ class LLMClient:
         cost_fn: CostFn | None = None,
         retry: RetryPolicy | None = None,
         sleep_fn: SleepFn | None = None,
+        request_timeout_s: float | None = DEFAULT_REQUEST_TIMEOUT_S,
         **default_params: Any,
     ) -> None:
+        if request_timeout_s is not None and request_timeout_s <= 0:
+            raise ValueError("request_timeout_s must be > 0 or None")
+        if request_timeout_s is not None and "timeout" in default_params:
+            raise ValueError("pass request_timeout_s, not timeout, to LLMClient (ambiguous otherwise)")
         self.default_model = default_model
         self._completion = completion_fn or litellm.completion
         self._cost = cost_fn or litellm.completion_cost
         self.retry = retry or RetryPolicy()
         self._sleep = sleep_fn or time.sleep
+        self.request_timeout_s = request_timeout_s
         self._default_params = default_params
+
+    def config_snapshot(self) -> dict[str, Any]:
+        """Configuração não sensível do cliente (sem chaves de API nem valores de ambiente)."""
+        return {
+            "default_model": self.default_model,
+            "request_timeout_s": self.request_timeout_s,
+            "retry_policy": self.retry.describe(),
+            "pricing_source": PRICING_SOURCE,
+        }
 
     def complete(
         self,
@@ -229,6 +252,8 @@ class LLMClient:
             raise ValueError("messages must be a non-empty sequence")
 
         kwargs: dict[str, Any] = dict(self._default_params)
+        if self.request_timeout_s is not None:
+            kwargs["timeout"] = self.request_timeout_s  # sem isto, um hang HTTP não levanta exceção
         if tools:
             kwargs["tools"] = list(tools)
 
