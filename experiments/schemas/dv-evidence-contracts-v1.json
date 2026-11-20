@@ -1,0 +1,41 @@
+{
+  "schema_id": "dv-evidence-contracts-v1",
+  "status": "ACTIVE_MINIMAL_CONTRACTS",
+  "authority": "Minimal NDV-specific contracts allowed by docs/ARCHITECTURE-GOVERNANCE.md (Evidence Ledger, Execution Ledger, VerificationResult, CapabilityProfile). Validation rules are enforced by tools/dv_ledgers.py.",
+  "notes": [
+    "No runtime, router, orchestrator, memory or controller is defined here.",
+    "Token totals are reported per component. A single total is not defined until the cached-input semantics of the executor usage are confirmed (see docs/ROADMAP.md R1.2)."
+  ],
+  "evidence_record": {
+    "required": ["record_id", "claim_id", "evidence_class", "evidence_level", "claim_state", "source_ref", "scope"],
+    "types": {"record_id": "string", "claim_id": "string", "evidence_class": "string", "evidence_level": "string", "claim_state": "string", "source_ref": "string", "scope": "string"},
+    "enums": {
+      "evidence_class": ["LITERATURE_EVIDENCE", "NDV_EXPERIMENTAL_EVIDENCE", "ENGINEERING_OBSERVATION"],
+      "evidence_level": ["E0", "E1", "E2", "E3", "E4"],
+      "claim_state": ["UNTESTED", "EXPLORATORY_SIGNAL", "SUPPORTED_IN_SCOPE", "REFUTED_IN_SCOPE", "INCONCLUSIVE", "STALE", "SUPERSEDED"]
+    }
+  },
+  "invocation_record": {
+    "required": ["invocation_id", "treatment", "role", "task_id", "returncode", "outcome", "counted_in_treatment", "usage"],
+    "types": {"invocation_id": "string", "treatment": "string", "role": "string", "task_id": "string", "returncode": "integer", "outcome": "string", "counted_in_treatment": "boolean", "usage": "object"},
+    "enums": {
+      "treatment": ["D0", "D1", "D2"],
+      "role": ["planner", "executor", "verifier"],
+      "outcome": ["COMPLETED", "FAILED", "TIMED_OUT", "BLOCKED"]
+    },
+    "usage_required": ["input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "reasoning_output_tokens"]
+  },
+  "verification_result": {
+    "required": ["task_id", "executor_id", "verifier_id", "verifier_sha256", "verdict", "task_satisfaction", "preservation_pass", "harness_valid", "executor_self_report_success"],
+    "types": {"task_id": "string", "executor_id": "string", "verifier_id": "string", "verifier_sha256": "sha256", "verdict": "string", "task_satisfaction": "boolean", "preservation_pass": "boolean", "harness_valid": "boolean", "executor_self_report_success": "boolean"},
+    "enums": {"verdict": ["PASS", "FAIL", "INCONCLUSIVE"]}
+  },
+  "capability_profile": {
+    "required": ["capability_id", "can_change", "change_granularity", "fixed"],
+    "types": {"capability_id": "string", "can_change": "array", "change_granularity": "string", "fixed": "array"},
+    "enums": {
+      "can_change": ["model", "prompt", "tools", "context", "memory_state", "instructions", "skills", "verifier", "retries", "handoff", "subagents", "topology"],
+      "change_granularity": ["OFFLINE", "PER_DATASET", "PER_TASK", "PER_ROLLOUT", "PER_SUBTASK", "PER_STEP", "PER_TOOL_CALL", "MID_TRAJECTORY"]
+    }
+  }
+}

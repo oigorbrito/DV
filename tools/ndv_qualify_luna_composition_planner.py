@@ -40,12 +40,18 @@ def init_repo(root:Path)->None:
         p=git(root,*args)
         if p.returncode!=0: raise ValueError(f"synthetic git setup failed: {v1.text(p)[-500:]}")
 
-def extract_plan(stdout:str, task_id:str)->dict[str,Any]:
-    valid=[]
+PLAN_FAILURE_CATEGORIES=("MALFORMED_JSONL","NO_VALID_PLAN","MULTIPLE_VALID_PLANS","PLAN_SCHEMA_INVALID","UNKNOWN_PLAN_INVALID")
+
+class MalformedJsonlError(ValueError):
+    """Raised when a line of the executor JSONL stream is not valid JSON."""
+
+def _scan_plans(stdout:str, task_id:str)->tuple[list[dict[str,Any]],int]:
+    """Return (valid plans, count of agent messages that were JSON objects but failed validation)."""
+    valid=[]; rejected=0
     for lineno,line in enumerate(stdout.splitlines(),1):
         if not line.strip(): continue
         try:event=json.loads(line)
-        except json.JSONDecodeError as exc: raise ValueError(f"malformed Codex JSONL at line {lineno}: {exc.msg}") from exc
+        except json.JSONDecodeError as exc: raise MalformedJsonlError(f"malformed Codex JSONL at line {lineno}: {exc.msg}") from exc
         if event.get("type")!="item.completed": continue
         item=event.get("item")
         if not isinstance(item,dict) or item.get("type")!="agent_message": continue
@@ -55,10 +61,30 @@ def extract_plan(stdout:str, task_id:str)->dict[str,Any]:
         except json.JSONDecodeError: continue
         if not isinstance(candidate,dict): continue
         try:comp.validate_plan(candidate,task_id)
-        except ValueError: continue
+        except ValueError: rejected+=1; continue
         valid.append(candidate)
+    return valid,rejected
+
+def extract_plan(stdout:str, task_id:str)->dict[str,Any]:
+    valid,_=_scan_plans(stdout,task_id)
     if len(valid)!=1: raise ValueError(f"expected exactly one valid structured plan agent message; observed {len(valid)}")
     return valid[0]
+
+def classify_plan_failure(stdout:str, task_id:str)->str|None:
+    """Derive a bounded diagnostic category from the executor output. Never reruns the planner.
+
+    Returns None when exactly one valid plan exists. Any unexpected error fails closed to UNKNOWN_PLAN_INVALID.
+    """
+    try:
+        valid,rejected=_scan_plans(stdout,task_id)
+    except MalformedJsonlError:
+        return "MALFORMED_JSONL"
+    except Exception:
+        return "UNKNOWN_PLAN_INVALID"
+    if len(valid)==1: return None
+    if len(valid)>1: return "MULTIPLE_VALID_PLANS"
+    if rejected>0: return "PLAN_SCHEMA_INVALID"
+    return "NO_VALID_PLAN"
 
 def resolve_surface(q:dict[str,Any], artifact_root:Path)->Path:
     raw=q.get("execution_surface_ref")
@@ -109,9 +135,9 @@ def qualify(luna_dir:Path,out_dir:Path,artifact_root:Path,timeout:int)->dict[str
     try: usage=usage_parser.parse_lines(stdout)
     except ValueError: usage={"status":"INVALID"}
     (evidence/"usage.json").write_text(json.dumps(usage,indent=2,sort_keys=True)+"\n",encoding="utf-8")
-    plan=None; plan_error=None
+    plan=None; plan_error=None; plan_error_category=None
     try: plan=extract_plan(stdout,TASK_ID)
-    except ValueError as exc: plan_error=str(exc)
+    except ValueError as exc: plan_error=str(exc); plan_error_category=classify_plan_failure(stdout,TASK_ID)
     if plan is not None: (out_dir/"plan.json").write_text(json.dumps(plan,indent=2,sort_keys=True,ensure_ascii=False)+"\n",encoding="utf-8")
     workspace_clean=(status.strip()=="")
     if timed_out: state="S0_RESOURCE_LIMIT"
@@ -128,7 +154,7 @@ def qualify(luna_dir:Path,out_dir:Path,artifact_root:Path,timeout:int)->dict[str
       "task":"SYNTHETIC_PLANNING_ONLY","task_id":TASK_ID,"development_task_exposure":False,"holdout_access":"NONE",
       "treatment_execution":"NOT_EXECUTED","retry_count":0,"escalation_count":0,
       "executor":{"returncode":proc.returncode,"timed_out":timed_out,"wall_seconds":wall},
-      "workspace_clean":workspace_clean,"plan_valid":plan is not None,"plan_error":plan_error,
+      "workspace_clean":workspace_clean,"plan_valid":plan is not None,"plan_error":plan_error,"plan_error_category":plan_error_category,
       "plan_file_sha256":sha_file(out_dir/"plan.json") if plan is not None else None,
       "usage":usage,"started_at":started,"completed_at":datetime.now(timezone.utc).isoformat()
     }

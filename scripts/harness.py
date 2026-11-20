@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -68,12 +69,21 @@ def git_tags(root: Path = ROOT) -> list[str]:
     return [line.strip() for line in cp.stdout.splitlines() if line.strip()]
 
 
+RELEASE_MIN_TAGS = 2
+
+
 def has_release(state: dict, root: Path = ROOT) -> tuple[bool, str]:
+    """A release is declared in the state file, or observed when at least RELEASE_MIN_TAGS Git tags exist.
+
+    A single tag (for example one historical cutover marker) is reported but does not count as a release.
+    """
     if state["release"].get("made") is True:
         return True, "policy/project-state.json declares a release"
     tags = git_tags(root)
+    if len(tags) >= RELEASE_MIN_TAGS:
+        return True, f"{len(tags)} Git tags observed (threshold {RELEASE_MIN_TAGS}): {', '.join(tags[:3])}"
     if tags:
-        return True, f"Git tags observed: {', '.join(tags[:3])}"
+        return False, f"{len(tags)} Git tag below release threshold ({RELEASE_MIN_TAGS}): {', '.join(tags)}"
     return False, "no declared release and no Git tags observed"
 
 

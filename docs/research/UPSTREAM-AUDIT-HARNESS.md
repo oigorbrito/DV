@@ -1,62 +1,62 @@
-# NDV Upstream Audit Harness
+# Harness de auditoria upstream do DV
 
-**Status:** ACTIVE  
-**Version:** 1  
-**Scope:** donor-project audit during `REUSE_ONLY`  
-**Authority:** operational companion to `docs/research/UPSTREAM-REUSE-PLAN.md`  
-**Nature:** evidence and decision harness; not an execution framework or benchmark implementation
+**Status:** ATIVO  
+**Versão:** 1  
+**Escopo:** auditoria de projetos doadores durante `REUSE_ONLY`  
+**Autoridade:** companheiro operacional de `docs/research/UPSTREAM-REUSE-PLAN.md`  
+**Natureza:** harness de evidência e decisão; não é um framework de execução nem a implementação de um benchmark
 
-## Purpose
+## Finalidade
 
-Provide a repeatable way to audit upstream donor projects without turning the audit into a repair, porting, or reimplementation effort.
+Oferecer uma forma repetível de auditar projetos doadores upstream, sem transformar a auditoria em um esforço de reparo, portabilidade ou reimplementação.
 
-This harness exists to answer one question efficiently:
+Este harness existe para responder a uma pergunta de forma eficiente:
 
-> Does an upstream donor already satisfy the unresolved NDV capability contract, and at what temporal/runtime granularity?
+> Um doador upstream já satisfaz o contrato de capacidade do DV que ainda não foi resolvido, e em qual granularidade temporal/de runtime?
 
-The harness is intentionally procedural. It does not introduce an NDV runtime, benchmark, router, controller, adapter, or agent loop.
+O harness é intencionalmente procedimental. Ele não introduz um runtime, benchmark, roteador, controlador, adaptador ou laço de agente do DV.
 
-## Empirical and software-engineering basis
+## Base empírica e de engenharia de software
 
-The harness follows these principles:
+O harness segue estes princípios:
 
-1. **Immutable subject identity.** Record the canonical repository and exact commit/release before interpreting behavior.
-2. **Separate claims from evidence.** README/paper claims, source-code observations, import/entry-point qualification, and runtime observations are recorded separately.
-3. **Automate repeatable phases.** Setup, execution, verification, and cleanup should be explicit and scriptable when upstream already provides those mechanisms.
-4. **Record the environment.** Python/runtime version, dependency state, platform constraints, required assets, and exact commands are evidence.
-5. **Fail closed on missing provenance.** A successful later command does not erase an earlier identity, dependency, asset, or harness-integrity failure.
-6. **No silent repair.** Missing datasets, stale checkpoints, incompatible pins, eager imports, provider drift, and broken examples are upstream reproducibility observations, not invitations to patch donor code.
-7. **Minimal intervention.** Prefer upstream configuration and documented extension points. Do not edit donor implementation merely to make an audit pass.
-8. **Explicit uncertainty.** If runtime confirmation is blocked, record `CODE_CONFIRMED_EXECUTION_BLOCKED` or `INCONCLUSIVE`; do not upgrade a source-code inference into an execution claim.
-9. **Stop when the question is answered.** Do not reproduce a full paper or benchmark if the unresolved NDV contract has already been answered with sufficient evidence.
-10. **Preserve negative evidence.** Operational friction and failed reproduction attempts remain part of the audit record.
+1. **Identidade imutável do objeto.** Registrar o repositório canônico e o commit/release exato antes de interpretar o comportamento.
+2. **Separar afirmações de evidência.** Afirmações do README/artigo, observações de código-fonte, qualificação de import/ponto de entrada e observações de runtime são registradas separadamente.
+3. **Automatizar fases repetíveis.** Configuração, execução, verificação e limpeza devem ser explícitas e scriptáveis quando o upstream já fornece esses mecanismos.
+4. **Registrar o ambiente.** Versão de Python/runtime, estado das dependências, restrições da plataforma, ativos necessários e comandos exatos são evidência.
+5. **Falhar de forma fechada na ausência de proveniência.** Um comando posterior bem-sucedido não apaga uma falha anterior de identidade, dependência, ativo ou integridade do harness.
+6. **Nenhum reparo silencioso.** Datasets ausentes, checkpoints desatualizados, versões incompatíveis fixadas, imports antecipados, deriva de provedor e exemplos quebrados são observações de reprodutibilidade do upstream, e não convites para corrigir o código do doador.
+7. **Intervenção mínima.** Preferir configuração upstream e pontos de extensão documentados. Não editar a implementação do doador apenas para que a auditoria passe.
+8. **Incerteza explícita.** Se a confirmação em runtime estiver bloqueada, registrar `CODE_CONFIRMED_EXECUTION_BLOCKED` ou `INCONCLUSIVE`; não promover uma inferência de código-fonte a afirmação de execução.
+9. **Parar quando a pergunta estiver respondida.** Não reproduzir um artigo ou benchmark completo se o contrato do DV em aberto já foi respondido com evidência suficiente.
+10. **Preservar evidência negativa.** Atritos operacionais e tentativas de reprodução que falharam continuam fazendo parte do registro da auditoria.
 
-These rules are consistent with ACM reproducibility guidance emphasizing explicit setup/run/cleanup phases, automated experiments, recorded runtime parameters and software versions, and artifacts sufficient for independent evaluation.
+Essas regras são consistentes com a orientação de reprodutibilidade da ACM, que enfatiza fases explícitas de configuração/execução/limpeza, experimentos automatizados, registro de parâmetros de execução e versões de software, e artefatos suficientes para avaliação independente.
 
-References:
+Referências:
 
 - ACM SIGMOD Availability & Reproducibility Initiative: https://reproducibility.sigmodconf.hosting.acm.org/
 - ACM SIGPLAN Empirical Evaluation Guidelines: https://www.sigplan.org/Resources/EmpiricalEvaluation/
 - ACM Artifact Review and Badging: https://www.acm.org/publications/policies/artifact-review-and-badging-current
 
-## Claim classes
+## Classes de afirmação
 
-Every conclusion must identify its strongest evidence class.
+Toda conclusão deve identificar a classe de evidência mais forte que a sustenta.
 
-| Class | Meaning | Allowed wording |
+| Classe | Significado | Redação permitida |
 | --- | --- | --- |
-| `DOC_CLAIM` | README, paper, docs, or comments only | "Upstream claims..." |
-| `CODE_CONFIRMED` | behavior located in pinned source code | "Source code implements..." |
-| `ENTRYPOINT_QUALIFIED` | documented/imported entry point loads in a supported environment | "Entry point is operationally importable..." |
-| `EXECUTION_CONFIRMED` | relevant upstream path executed with observable runtime behavior | "Execution demonstrated..." |
-| `CODE_CONFIRMED_EXECUTION_BLOCKED` | source supports the conclusion but runtime qualification is blocked by upstream reproducibility constraints | "Code confirms X; runtime confirmation blocked by Y." |
-| `INCONCLUSIVE` | evidence does not resolve the contract | no stronger conclusion permitted |
+| `DOC_CLAIM` | apenas README, artigo, documentação ou comentários | "O upstream afirma..." |
+| `CODE_CONFIRMED` | comportamento localizado em código-fonte fixado | "O código-fonte implementa..." |
+| `ENTRYPOINT_QUALIFIED` | ponto de entrada documentado/importado carrega em um ambiente suportado | "O ponto de entrada é operacionalmente importável..." |
+| `EXECUTION_CONFIRMED` | caminho upstream relevante executado com comportamento de runtime observável | "A execução demonstrou..." |
+| `CODE_CONFIRMED_EXECUTION_BLOCKED` | o código sustenta a conclusão, mas a qualificação em runtime está bloqueada por restrições de reprodutibilidade do upstream | "O código confirma X; a confirmação em runtime está bloqueada por Y." |
+| `INCONCLUSIVE` | a evidência não resolve o contrato | nenhuma conclusão mais forte é permitida |
 
-`DOC_CLAIM` alone is never sufficient to close a capability gate.
+`DOC_CLAIM` sozinho nunca basta para fechar um portão de capacidade.
 
-## Audit state machine
+## Máquina de estados da auditoria
 
-Each donor moves through the following states:
+Cada doador passa pelos estados abaixo:
 
 ```text
 ACQUIRED
@@ -68,7 +68,7 @@ ACQUIRED
   -> STOP
 ```
 
-A donor may terminate early as:
+Um doador pode terminar antes como:
 
 ```text
 UPSTREAM_ENVIRONMENT_BLOCKED
@@ -80,11 +80,11 @@ CODE_CONFIRMED_EXECUTION_BLOCKED
 INCONCLUSIVE
 ```
 
-These are audit outcomes, not reasons to build NDV code.
+Esses são desfechos de auditoria, não motivos para construir código do DV.
 
-## Phase 1 — acquisition and identity
+## Fase 1 — aquisição e identidade
 
-Record before installation or modification:
+Registrar antes de qualquer instalação ou modificação:
 
 ```text
 canonical_repository
@@ -97,20 +97,20 @@ declared_runtime_versions
 declared_dependency_files
 ```
 
-Required checks:
+Verificações obrigatórias:
 
 ```text
 git status --short
 git rev-parse HEAD
 ```
 
-If the local tree is already modified, distinguish pre-existing modifications from audit-generated configuration or caches before using it as evidence.
+Se a árvore local já estiver modificada, distinguir as modificações pré-existentes das configurações ou caches gerados pela auditoria antes de usá-la como evidência.
 
-## Phase 2 — static architecture mapping
+## Fase 2 — mapeamento arquitetural estático
 
-Inspect only enough code to answer the unresolved contract.
+Inspecionar apenas o código necessário para responder ao contrato em aberto.
 
-Record:
+Registrar:
 
 ```text
 entry_points
@@ -124,7 +124,7 @@ feedback_path
 cost_or_quality_objective
 ```
 
-For adaptive systems, always classify **when** a decision changes:
+Para sistemas adaptativos, classificar sempre **quando** uma decisão muda:
 
 ```text
 offline
@@ -140,7 +140,7 @@ per-tool-call
 during-active-executor
 ```
 
-And classify **what** can change:
+E classificar **o que** pode mudar:
 
 ```text
 model
@@ -157,13 +157,13 @@ retry policy
 handoff
 ```
 
-The distinction between "can produce different architectures" and "can recompose during an active trajectory" is mandatory.
+A distinção entre "pode produzir arquiteturas diferentes" e "pode recompor durante uma trajetória ativa" é obrigatória.
 
-## Phase 3 — entry-point precheck
+## Fase 3 — pré-checagem do ponto de entrada
 
-Use the upstream-supported runtime version.
+Usar a versão de runtime suportada pelo upstream.
 
-Attempt the least expensive documented entry point first, normally:
+Tentar primeiro o ponto de entrada documentado mais barato, normalmente:
 
 ```text
 --help
@@ -172,9 +172,9 @@ dry-run
 published minimal example
 ```
 
-Record each failure by cause rather than repeatedly calling it a product defect.
+Registrar cada falha pela causa, e não repetir que se trata de um defeito do produto.
 
-Examples:
+Exemplos:
 
 ```text
 DEPENDENCY_MISSING
@@ -186,19 +186,19 @@ ASSET_MISSING
 CHECKPOINT_MISMATCH
 ```
 
-A package-manager consistency check such as `pip check` proves only that installed packages are mutually satisfiable. It does not prove that all upstream requirements are installed or that the upstream environment is reproducible.
+Uma verificação de consistência do gerenciador de pacotes, como `pip check`, prova apenas que os pacotes instalados são mutuamente satisfeitos. Ela não prova que todos os requisitos do upstream estão instalados nem que o ambiente upstream é reproduzível.
 
-## Phase 4 — minimal upstream execution
+## Fase 4 — execução mínima do upstream
 
-Execution should be attempted only when all of the following hold:
+A execução só deve ser tentada quando todas as condições abaixo forem verdadeiras:
 
-1. the upstream path is relevant to the unresolved NDV contract;
-2. required assets/checkpoints are available or documented;
-3. the run can be bounded without editing donor implementation;
-4. cost and external API usage are understood;
-5. the run does not require rebuilding a benchmark or inventing an NDV harness.
+1. o caminho upstream é relevante para o contrato do DV em aberto;
+2. os ativos/checkpoints necessários estão disponíveis ou documentados;
+3. a execução pode ser limitada sem editar a implementação do doador;
+4. o custo e o uso de APIs externas são conhecidos;
+5. a execução não exige reconstruir um benchmark nem inventar um harness do DV.
 
-Use, in order:
+Usar, nesta ordem:
 
 ```text
 upstream test
@@ -208,26 +208,26 @@ upstream benchmark with upstream-exposed subset
 existing external benchmark
 ```
 
-Do not modify a donor solely to expose a smaller subset or to make an obsolete checkpoint load.
+Não modificar um doador apenas para expor um subconjunto menor ou para fazer carregar um checkpoint obsoleto.
 
-## Operational stop rule
+## Regra operacional de parada
 
-Stop attempting runtime reproduction when the next step would primarily test or repair upstream packaging rather than the NDV capability contract.
+Parar a tentativa de reprodução em runtime quando o próximo passo testar ou reparar principalmente o empacotamento do upstream, e não o contrato de capacidade do DV.
 
-Typical stop triggers:
+Gatilhos típicos de parada:
 
-- the relevant runtime semantics are already located in code and additional installation work concerns unrelated eager imports;
-- the documented benchmark requires external assets not shipped with the repository;
-- the current loader expects checkpoints not present in the pinned revision;
-- the framework has an internal subset mechanism but does not expose it through the upstream entry point;
-- bounded execution would require editing donor code, dataset, loader, benchmark, or checkpoint;
-- full reproduction would be materially more expensive than the information gain for the current gate.
+- a semântica de runtime relevante já foi localizada no código, e a instalação adicional diz respeito a imports antecipados não relacionados;
+- o benchmark documentado exige ativos externos que não vêm com o repositório;
+- o carregador atual espera checkpoints que não estão na revisão fixada;
+- o framework tem um mecanismo interno de subconjunto, mas não o expõe pelo ponto de entrada do upstream;
+- a execução limitada exigiria editar o código do doador, o dataset, o carregador, o benchmark ou o checkpoint;
+- a reprodução completa seria materialmente mais cara do que o ganho de informação para o portão atual.
 
-When stopping, preserve the strongest supported conclusion and explicitly record the runtime blocker.
+Ao parar, preservar a conclusão mais forte sustentada e registrar explicitamente o bloqueio de runtime.
 
-## No-repair boundary
+## Limite de não reparo
 
-During `REUSE_ONLY`, do not perform any of the following merely to complete an audit:
+Durante `REUSE_ONLY`, não executar nenhuma das ações abaixo apenas para completar uma auditoria:
 
 ```text
 patch donor source
@@ -241,11 +241,11 @@ change evaluation semantics
 manufacture missing assets
 ```
 
-Configuration-only changes are allowed when they use an existing upstream interface. They must be recorded and reverted or kept outside the donor working tree where practical.
+Mudanças apenas de configuração são permitidas quando usam uma interface upstream existente. Elas devem ser registradas e revertidas, ou mantidas fora da árvore de trabalho do doador quando isso for viável.
 
-## Evidence record
+## Registro de evidência
 
-For each donor, record at minimum:
+Para cada doador, registrar no mínimo:
 
 ```text
 donor
@@ -268,7 +268,7 @@ decision
 next_gate
 ```
 
-`working_tree_after` must separate:
+`working_tree_after` deve separar:
 
 ```text
 versioned_source_changes
@@ -279,11 +279,11 @@ logs
 downloaded_assets
 ```
 
-Never describe generated caches or a local virtual environment as donor source changes.
+Nunca descrever caches gerados ou um ambiente virtual local como alterações do código-fonte do doador.
 
-## Decision vocabulary
+## Vocabulário de decisão
 
-A donor audit closes with exactly one primary disposition:
+A auditoria de um doador se encerra com exatamente uma disposição primária:
 
 ```text
 REUSE_AS_IS
@@ -295,13 +295,13 @@ INCONCLUSIVE
 GAP_PERSISTS_NEXT_DONOR
 ```
 
-`REUSE_WITH_MINIMAL_ADAPTER` is unavailable unless the conditions in `UPSTREAM-REUSE-PLAN.md` Phase B are met.
+`REUSE_WITH_MINIMAL_ADAPTER` só fica disponível se as condições da Fase B de `UPSTREAM-REUSE-PLAN.md` forem atendidas.
 
-`BUILD_CUSTOM_REQUIRED` is not an audit-harness outcome during the active `REUSE_ONLY` phase.
+`BUILD_CUSTOM_REQUIRED` não é um desfecho do harness de auditoria durante a fase ativa de `REUSE_ONLY`.
 
-## Gate decision rule
+## Regra de decisão de portão
 
-For the current donor queue:
+Para a fila atual de doadores:
 
 ```text
 if donor closes unresolved contract:
@@ -317,25 +317,25 @@ else:
     record INCONCLUSIVE
 ```
 
-Never convert "upstream is difficult to reproduce" into "NDV must implement it."
+Nunca converter "o upstream é difícil de reproduzir" em "o DV precisa implementar isso".
 
-## Application to completed audits
+## Aplicação às auditorias concluídas
 
 ### AOrchestra
 
-Strongest evidence:
+Evidência mais forte:
 
 ```text
 EXECUTION_CONFIRMED
 ```
 
-Observed adaptation boundary:
+Fronteira de adaptação observada:
 
 ```text
 between delegations / new SubAgent
 ```
 
-Residual question:
+Questão residual:
 
 ```text
 generic recomposition during an already-active executor
@@ -343,19 +343,19 @@ generic recomposition during an already-active executor
 
 ### MaAS
 
-Strongest architectural evidence:
+Evidência arquitetural mais forte:
 
 ```text
 CODE_CONFIRMED
 ```
 
-Observed adaptation boundary:
+Fronteira de adaptação observada:
 
 ```text
 per query, before operator execution
 ```
 
-Operational observations include:
+As observações operacionais incluem:
 
 ```text
 Python version constraint (<3.12)
@@ -368,7 +368,7 @@ versioned .pth artifacts not matching current loader naming
 internal subset support not exposed by the CLI path
 ```
 
-Therefore the correct audit posture is:
+Portanto, a postura correta de auditoria é:
 
 ```text
 MaAS contributes query-conditioned architecture selection.
@@ -377,15 +377,15 @@ Do not repair MaAS merely to run a full HumanEval reproduction.
 Proceed to AgentSquare after recording the operational blocker state.
 ```
 
-## Cleanup and handoff
+## Limpeza e transferência
 
-At donor close:
+No fechamento de cada doador:
 
-1. capture final `git status --short`;
-2. do not commit secrets;
-3. restore versioned configuration containing credentials;
-4. remove only audit-generated caches/logs/venvs when safe and useful;
-5. preserve commands, versions, blockers, and conclusions in the handoff;
-6. start the next donor from its pinned identity, not from assumptions inherited from the previous implementation.
+1. capturar o `git status --short` final;
+2. não commitar segredos;
+3. restaurar a configuração versionada que contenha credenciais;
+4. remover apenas caches, logs e ambientes virtuais gerados pela auditoria, quando isso for seguro e útil;
+5. preservar comandos, versões, bloqueios e conclusões no registro de transferência;
+6. iniciar o próximo doador a partir da sua identidade fixada, e não de premissas herdadas da implementação anterior.
 
-The audit is complete when another engineer can determine **what was proven, what was only inferred, what was blocked, and why work stopped** without repeating the investigation.
+A auditoria está concluída quando outro engenheiro consegue determinar **o que foi provado, o que foi apenas inferido, o que foi bloqueado e por que o trabalho parou**, sem repetir a investigação.

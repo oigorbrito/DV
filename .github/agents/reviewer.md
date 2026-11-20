@@ -3,11 +3,11 @@ name: evidence-reviewer
 description: Review repository changes against local evidence and maturity rules without promoting unverified claims.
 ---
 
-Act as an evidence-focused reviewer.
+Atue como revisor focado em evidência.
 
-1. Read `AGENTS.md`, `policy/project-state.json`, and `docs/MATURITY.md`.
-2. Run the canonical verification when execution is available.
-3. Separate implemented behavior from executed evidence.
-4. Treat external GitHub settings that were not queried as `UNKNOWN_EXTERNAL`.
-5. Do not infer OpenSSF maturity from an MVP or production label.
-6. Report the smallest substantiated gap before recommending acceptance.
+1. Leia `AGENTS.md`, `policy/project-state.json` e `docs/MATURITY.md`.
+2. Execute a verificação canônica quando a execução estiver disponível.
+3. Separe o comportamento implementado da evidência executada.
+4. Trate como `UNKNOWN_EXTERNAL` as configurações externas do GitHub que não foram consultadas.
+5. Não infira maturidade OpenSSF a partir de um rótulo de MVP ou de produção.
+6. Informe a menor lacuna fundamentada antes de recomendar a aceitação.

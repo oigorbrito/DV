@@ -1,116 +1,116 @@
-# NDV Upstream Reuse Plan
+# Plano de reuso upstream do DV
 
-**Status:** ACTIVE  
-**Current engineering mode:** `REUSE_ONLY`  
-**Applies to:** current NDV phase until an explicit exit decision is recorded  
-**Authority:** complements `AGENTS.md`, `docs/ARCHITECTURE-GOVERNANCE.md`, and `docs/PROJECT-OBJECTIVE.md`
+**Status:** ATIVO  
+**Modo atual de engenharia:** `REUSE_ONLY`  
+**Aplica-se a:** fase atual do DV até que uma decisão explícita de saída seja registrada  
+**Autoridade:** complementa `AGENTS.md`, `docs/ARCHITECTURE-GOVERNANCE.md` e `docs/PROJECT-OBJECTIVE.md`
 
-## Purpose
+## Finalidade
 
-The current NDV phase exists to determine how much of the target capability is already implemented by upstream projects and can be reused directly.
+A fase atual do DV existe para determinar quanto da capacidade-alvo já está implementado por projetos upstream e pode ser reutilizado diretamente.
 
-The default assumption for this phase is:
+A premissa padrão desta fase é:
 
-> Do not create NDV implementation code. Run, inspect, measure, and compose existing donor projects first.
+> Não criar código de implementação do DV. Executar, inspecionar, medir e compor primeiro os projetos doadores existentes.
 
-This is intentionally stricter than the repository-wide architecture order. The goal is to prevent the research program from drifting into a large custom harness, runtime, router, orchestrator, controller, or benchmark before the existing ecosystem has been exhausted.
+Isso é intencionalmente mais estrito do que a ordem de arquitetura do repositório. O objetivo é impedir que o programa de pesquisa derive para um grande harness, runtime, roteador, orquestrador, controlador ou benchmark customizado antes que o ecossistema existente tenha sido esgotado.
 
-## Current phase rule
+## Regra da fase atual
 
-### Phase A — upstream-first, zero custom implementation
+### Fase A — upstream primeiro, zero implementação customizada
 
-While this document is ACTIVE:
+Enquanto este documento estiver ATIVO:
 
-- do not implement an NDV runtime;
-- do not implement an NDV orchestrator;
-- do not implement an NDV router or adaptive controller;
-- do not implement a generic NDV agent framework;
-- do not implement new memory/state infrastructure;
-- do not implement a new benchmark or harness when an existing one can exercise the same contract;
-- do not reproduce upstream algorithms locally merely to obtain tighter control over them;
-- do not port or rewrite donor code unless reuse in place has first been shown impossible;
-- do not add convenience abstractions that duplicate a donor project's existing interface.
+- não implementar um runtime do DV;
+- não implementar um orquestrador do DV;
+- não implementar um roteador nem um controlador adaptativo do DV;
+- não implementar um framework genérico de agentes do DV;
+- não implementar nova infraestrutura de memória/estado;
+- não implementar um novo benchmark ou harness quando um existente puder exercitar o mesmo contrato;
+- não reproduzir localmente algoritmos upstream apenas para ter controle mais firme sobre eles;
+- não portar nem reescrever código doador, a menos que o reuso no lugar tenha sido mostrado como impossível;
+- não adicionar abstrações de conveniência que dupliquem a interface existente de um projeto doador.
 
-Allowed work is limited to:
+O trabalho permitido se limita a:
 
-- discovering candidate donor projects;
-- cloning or acquiring upstream repositories;
-- pinning repository URL, license, commit SHA, release/tag, and dependency state;
-- running each donor unmodified;
-- reading and mapping its architecture and runtime behavior;
-- recording which NDV capability contracts it already satisfies;
-- recording gaps with direct code-level evidence;
-- using upstream-provided tests, examples, benchmarks, and harnesses;
-- adding documentation, provenance, evidence, configuration, and reproducibility metadata needed to evaluate reuse.
+- descobrir projetos doadores candidatos;
+- clonar ou obter repositórios upstream;
+- fixar URL do repositório, licença, SHA do commit, release/tag e estado de dependências;
+- executar cada doador sem modificações;
+- ler e mapear sua arquitetura e seu comportamento de runtime;
+- registrar quais contratos de capacidade do DV ele já satisfaz;
+- registrar lacunas com evidência direta no código;
+- usar testes, exemplos, benchmarks e harnesses fornecidos pelo upstream;
+- adicionar documentação, proveniência, evidência, configuração e metadados de reprodutibilidade necessários para avaliar o reuso.
 
-The desired outcome of Phase A is `REUSE_ONLY` whenever the existing ecosystem already satisfies the required contract.
+O resultado desejado da Fase A é `REUSE_ONLY` sempre que o ecossistema existente já satisfizer o contrato exigido.
 
-### Phase B — minimal adapter exception
+### Fase B — exceção de adaptador mínimo
 
-Minimal NDV-specific adapter code is not part of the default Phase A work.
+Código mínimo de adaptador específico do DV não faz parte do trabalho padrão da Fase A.
 
-An adapter may be introduced only after all of the following are recorded:
+Um adaptador só pode ser introduzido depois que todos os itens abaixo forem registrados:
 
-1. the donor implementation has been run successfully in its upstream form;
-2. the required NDV contract cannot be exercised through an existing upstream interface;
-3. the missing piece is integration glue rather than a reimplementation of donor behavior;
-4. the adapter is smaller and lower-maintenance than a fork or rewrite;
-5. the change has an explicit experiment or integration decision that needs it.
+1. a implementação doadora foi executada com sucesso na sua forma upstream;
+2. o contrato exigido pelo DV não pode ser exercitado por uma interface upstream existente;
+3. a peça faltante é cola de integração, e não reimplementação do comportamento do doador;
+4. o adaptador é menor e tem manutenção mais barata do que um fork ou uma reescrita;
+5. a mudança tem um experimento ou uma decisão de integração explícita que a exija.
 
-If approved, the adapter must:
+Se aprovado, o adaptador deve:
 
-- contain only translation, binding, protocol conversion, or configuration glue;
-- delegate substantive behavior to the donor project;
-- avoid copying donor algorithms into NDV;
-- preserve donor provenance and license requirements;
-- be removable if the upstream project later exposes the required interface.
+- conter apenas tradução, vinculação, conversão de protocolo ou cola de configuração;
+- delegar o comportamento substantivo ao projeto doador;
+- evitar copiar algoritmos do doador para o DV;
+- preservar a proveniência e os requisitos de licença do doador;
+- ser removível se o projeto upstream expuser depois a interface necessária.
 
-## Donor-first evaluation order
+## Ordem de avaliação de doadores
 
-The primary donor gates are ordered:
+Os principais portões de doadores estão ordenados:
 
-1. **AOrchestra** — primary candidate for runtime composition/orchestration reuse.
-2. **MaAS** — candidate for automated agent-architecture search/adaptation and cost-aware selection.
-3. **AgentSquare** — candidate for modular composition of agent capabilities.
-4. **SkillOrchestra** — candidate for reusable skill/capability orchestration.
-5. **ClawArena / ClawArena-Team** — benchmark/harness candidate after the reusable runtime/composition donors have been exhausted.
+1. **AOrchestra** — candidato principal para reuso de composição/orquestração de runtime.
+2. **MaAS** — candidato para busca/adaptação automática de arquitetura de agentes e seleção sensível a custo.
+3. **AgentSquare** — candidato para composição modular de capacidades de agentes.
+4. **SkillOrchestra** — candidato para orquestração reutilizável de skills/capacidades.
+5. **ClawArena / ClawArena-Team** — candidato a benchmark/harness, depois de esgotados os doadores reutilizáveis de runtime/composição.
 
-Secondary infrastructure and evidence sources include:
+Fontes secundárias de infraestrutura e evidência incluem:
 
-- **TwinRouterBench / Agent-as-a-Router** — routing and cost/capability evaluation infrastructure.
-- **OpenHands / SWE-bench / TerminalBench** — software-engineering execution and verification infrastructure.
+- **TwinRouterBench / Agent-as-a-Router** — infraestrutura de avaliação de roteamento e de custo/capacidade.
+- **OpenHands / SWE-bench / TerminalBench** — infraestrutura de execução e verificação em engenharia de software.
 
-This is a gated research queue, not an integration mandate. Do not audit the next donor merely because it is listed. Advance only when the current donor leaves a contract-relevant gap. If a donor closes the gap, stop for that contract.
+Esta é uma fila de pesquisa com portões, não um mandato de integração. Não auditar o próximo doador só porque ele está listado. Avançar somente quando o doador atual deixar uma lacuna relevante para o contrato. Se um doador fechar a lacuna, parar para aquele contrato.
 
-Before a donor is treated as an NDV dependency, record its canonical repository, license, pinned commit or release, execution instructions, and the exact capability being reused.
+Antes de tratar um doador como dependência do DV, registrar seu repositório canônico, licença, commit ou release fixado, instruções de execução e a capacidade exata que está sendo reutilizada.
 
-## Audit protocol for each donor
+## Protocolo de auditoria para cada doador
 
-For each candidate, answer from source code and execution evidence rather than README claims alone:
+Para cada candidato, responder a partir do código-fonte e da evidência de execução, e não apenas das afirmações do README:
 
-1. What decisions are made dynamically at runtime?
-2. What can be composed, replaced, enabled, disabled, or delegated?
-3. At what granularity does adaptation occur: task, subtask, step, tool call, agent, or model call?
-4. Which of the following are selectable or mutable: model, tools, context, instructions, memory/state, verifier, retries, handoff, subagents?
-5. Is there an explicit cost, quality, latency, or success objective?
-6. Does the project preserve state across changes or handoffs?
-7. Does it already expose composition/decomposition semantics under another name?
-8. Which NDV contracts are already fully satisfied?
-9. Which gaps remain after using the donor as intended?
-10. Can each remaining gap be solved by configuration or an existing extension point before any adapter is considered?
+1. Quais decisões são tomadas dinamicamente em runtime?
+2. O que pode ser composto, substituído, habilitado, desabilitado ou delegado?
+3. Em que granularidade a adaptação acontece: tarefa, subtarefa, passo, chamada de ferramenta, agente ou chamada de modelo?
+4. Quais destes são selecionáveis ou mutáveis: modelo, ferramentas, contexto, instruções, memória/estado, verificador, retentativas, transferência, subagentes?
+5. Existe um objetivo explícito de custo, qualidade, latência ou sucesso?
+6. O projeto preserva o estado através de mudanças ou transferências?
+7. Ele já expõe semântica de composição/decomposição com outro nome?
+8. Quais contratos do DV já são plenamente satisfeitos?
+9. Quais lacunas restam depois de usar o doador conforme previsto?
+10. Cada lacuna restante pode ser resolvida por configuração ou por um ponto de extensão existente antes de qualquer adaptador ser considerado?
 
-Operational execution of this protocol is governed by `docs/research/UPSTREAM-AUDIT-HARNESS.md`. That harness separates documentation claims, code-confirmed behavior, entry-point qualification, runtime confirmation, and execution-blocked conclusions; it also defines explicit no-repair and stop rules so donor auditing does not drift into donor maintenance.
+A execução operacional deste protocolo é regida por `docs/research/UPSTREAM-AUDIT-HARNESS.md`. Esse harness separa afirmações da documentação, comportamento confirmado no código, qualificação do ponto de entrada, confirmação em runtime e conclusões bloqueadas pela execução; ele também define regras explícitas de não reparo e de parada, para que a auditoria de doadores não derive para a manutenção dos doadores.
 
-The audit must distinguish two independent axes:
+A auditoria deve distinguir dois eixos independentes:
 
-- **what can change** — model, prompt/reasoning, tools, memory/state, context, instructions, skills, subagents, topology/workflow, verifier, retries, handoff;
-- **when it can change** — offline, training-time, per dataset, per query, per episode, per rollout, per subtask, between delegations, per step, per tool call, or during an already-active executor.
+- **o que pode mudar** — modelo, prompt/raciocínio, ferramentas, memória/estado, contexto, instruções, skills, subagentes, topologia/workflow, verificador, retentativas, transferência;
+- **quando pode mudar** — offline, em tempo de treinamento, por conjunto de dados, por consulta, por episódio, por rollout, por subtarefa, entre delegações, por passo, por chamada de ferramenta ou durante um executor já ativo.
 
-A donor that can generate different architectures per query does not thereby demonstrate recomposition during an active trajectory.
+Um doador que gera arquiteturas diferentes por consulta não demonstra, por isso, recomposição durante uma trajetória ativa.
 
-## Reuse decision record
+## Registro de decisão de reuso
 
-For every relevant capability, record one of:
+Para cada capacidade relevante, registrar um dos itens:
 
 - `REUSE_AS_IS`
 - `REUSE_WITH_CONFIGURATION`
@@ -120,55 +120,55 @@ For every relevant capability, record one of:
 - `NO_BUILD`
 - `INCONCLUSIVE`
 
-`FORK_REQUIRED` and `BUILD_CUSTOM_REQUIRED` are not valid conclusions without code-level evidence showing why lower-cost reuse modes fail the required contract.
+`FORK_REQUIRED` e `BUILD_CUSTOM_REQUIRED` não são conclusões válidas sem evidência no código que mostre por que os modos de reuso de menor custo falham no contrato exigido.
 
-## Benchmark and test rule
+## Regra de benchmark e de testes
 
-Tests are not the product of this phase.
+Testes não são o produto desta fase.
 
-Prefer, in order:
+Preferir, nesta ordem:
 
-1. donor project's own tests and examples;
-2. donor project's published benchmark or evaluation harness;
-3. an existing external benchmark already accepted by the relevant research community;
-4. a thin NDV integration check;
-5. a new NDV benchmark only when the required property cannot be measured by the previous four options.
+1. testes e exemplos do próprio projeto doador;
+2. benchmark ou harness de avaliação publicado pelo doador;
+3. um benchmark externo já aceito pela comunidade de pesquisa relevante;
+4. uma verificação fina de integração do DV;
+5. um novo benchmark do DV somente quando a propriedade exigida não puder ser medida pelas quatro opções anteriores.
 
-A new test must answer a specific unresolved NDV question. Do not create test matrices merely because they are possible.
+Um teste novo deve responder a uma pergunta específica e não resolvida do DV. Não criar matrizes de teste só porque é possível.
 
-## Provenance requirement
+## Requisito de proveniência
 
-For every donor used in evidence, record at minimum:
+Para cada doador usado em evidência, registrar no mínimo:
 
-- canonical repository;
-- commit SHA or immutable release/tag;
-- license;
-- acquisition date;
-- local modifications, if any;
-- exact command used to execute;
-- environment/dependency information required for reproduction.
+- repositório canônico;
+- SHA do commit ou release/tag imutável;
+- licença;
+- data de aquisição;
+- modificações locais, se houver;
+- comando exato usado para executar;
+- informações de ambiente/dependências necessárias para reprodução.
 
-Never present donor code or donor evidence as if it originated in NDV.
+Nunca apresentar código ou evidência de um doador como se tivesse origem no DV.
 
-## Exit criteria for REUSE_ONLY mode
+## Critérios de saída do modo REUSE_ONLY
 
-This document remains ACTIVE until at least one of the following is recorded:
+Este documento permanece ATIVO até que pelo menos um dos itens abaixo seja registrado:
 
-1. the required NDV behavior is fully available upstream, producing a `REUSE_ONLY` or `NO_BUILD` outcome; or
-2. a concrete capability gap remains after the relevant donor projects have been run and inspected, and the gap cannot be closed through configuration or existing extension points.
+1. o comportamento exigido pelo DV está totalmente disponível upstream, produzindo um desfecho `REUSE_ONLY` ou `NO_BUILD`; ou
+2. uma lacuna concreta de capacidade permanece depois que os projetos doadores relevantes foram executados e inspecionados, e a lacuna não pode ser fechada por configuração ou por pontos de extensão existentes.
 
-Only case 2 can justify moving from Phase A to the minimal-adapter exception.
+Apenas o caso 2 pode justificar a passagem da Fase A para a exceção de adaptador mínimo.
 
-A move beyond minimal adapters requires a separate architecture decision supported by experimental evidence.
+Uma passagem além dos adaptadores mínimos exige uma decisão arquitetural separada, apoiada por evidência experimental.
 
-## Current audit state and immediate next action
+## Estado atual da auditoria e próxima ação imediata
 
-AOrchestra has been execution-confirmed for dynamic delegation and fresh subagent creation. MaAS has been code-confirmed for query-conditioned architecture selection, while its pinned revision presents upstream reproducibility blockers for a bounded HumanEval run (including missing external dataset assets, checkpoint/loader mismatch, and subset support not exposed by the CLI path).
+A AOrchestra teve a execução confirmada para delegação dinâmica e criação de subagentes novos. O MaAS teve a seleção de arquitetura condicionada à consulta confirmada por leitura de código, mas sua revisão fixada apresenta bloqueios de reprodutibilidade upstream para uma execução limitada do HumanEval (incluindo ativos externos de dados ausentes, incompatibilidade entre checkpoint e carregador, e suporte a subconjuntos não exposto pelo caminho de CLI).
 
-The unresolved contract remains:
+O contrato não resolvido continua sendo:
 
-> Can an upstream donor recompose relevant capabilities during an already-active execution trajectory based on intermediate state, rather than only between delegations or before query execution?
+> Um doador upstream consegue recompor capacidades relevantes durante uma trajetória de execução já ativa, com base no estado intermediário, e não apenas entre delegações ou antes da execução da consulta?
 
-Proceed to **AgentSquare** using `docs/research/UPSTREAM-AUDIT-HARNESS.md`.
+Prosseguir para o **AgentSquare**, usando `docs/research/UPSTREAM-AUDIT-HARNESS.md`.
 
-Do not repair AOrchestra or MaAS, and do not write NDV runtime code, merely to strengthen evidence beyond what the current gate requires.
+Não reparar a AOrchestra nem o MaAS, e não escrever código de runtime do DV apenas para reforçar a evidência além do que o portão atual exige.

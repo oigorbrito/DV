@@ -1,49 +1,49 @@
-# NDV Project Objective
+# Objetivo do projeto DV
 
-## Research question
+## Pergunta de pesquisa
 
-Can an adaptive meta-control layer choose the minimum sufficient combination of heterogeneous software-engineering capabilities so that verified task success is achieved with lower complete system cost and acceptable latency than fixed execution strategies?
+Uma camada adaptativa de meta-controle consegue escolher a combinação mínima suficiente de capacidades heterogêneas de engenharia de software para que o sucesso verificado seja alcançado com custo total do sistema menor e latência aceitável do que estratégias de execução fixas?
 
-## Scope
+## Escopo
 
-NDV studies decision-making above an ecosystem of models, coding agents, executors, tools, verifiers, runtimes, and orchestrators. It does not assume that any of those capabilities should be reimplemented.
+O DV estuda a tomada de decisão acima de um ecossistema de modelos, agentes de codificação, executores, ferramentas, verificadores, runtimes e orquestradores. Não assume que nenhuma dessas capacidades deva ser reimplementada.
 
-The working interaction is:
+A interação de trabalho é:
 
 `User -> NDV decision process -> selected external capability/composition -> evidence -> next decision`
 
-Candidate actions include continue, verify, retry, switch, handoff, escalate, and stop.
+Ações candidatas incluem continuar, verificar, tentar de novo, trocar, transferir, escalar e parar.
 
-## Optimization objective
+## Objetivo de otimização
 
-Minimize complete system cost subject to a required level of verified success.
+Minimizar o custo total do sistema sujeito a um nível exigido de sucesso verificado.
 
-Complete cost includes execution, routing, task shaping, planning, context, coordination, verification, retry/replanning, handoff/escalation, latency, and applicable local/remote infrastructure costs.
+O custo total inclui execução, roteamento, moldagem da tarefa, planejamento, contexto, coordenação, verificação, novas tentativas/replanejamento, transferência/escalonamento, latência e custos de infraestrutura local e remota aplicáveis.
 
-Primary metric:
+Métrica primária:
 
 `TOTAL_SYSTEM_TOKENS / VERIFIED_SOLVED_TASK`
 
-No single composite score should hide solve rate, monetary cost, latency, or failure distribution.
+Nenhuma pontuação composta única deve ocultar a taxa de resolução, o custo monetário, a latência ou a distribuição de falhas.
 
-## Core principles
+## Princípios centrais
 
-- Task first.
-- Minimum sufficient composition.
-- Each added layer must pay for itself.
-- Verified evidence beats executor self-report.
-- Continuity belongs to the task, not the executor.
-- Transfer state only when it improves economics or reliability.
-- Existing capabilities are preferred over custom implementations when they satisfy the required contract.
-- If frontier agents solve the target distribution more cheaply without NDV, NDV should shrink or disappear.
+- A tarefa primeiro.
+- Composição mínima suficiente.
+- Cada camada adicionada precisa se pagar.
+- Evidência verificada supera o relato do executor.
+- A continuidade pertence à tarefa, não ao executor.
+- Transferir estado somente quando isso melhora a economia ou a confiabilidade.
+- Capacidades existentes são preferidas a implementações próprias quando atendem ao contrato exigido.
+- Se agentes de fronteira resolvem a distribuição-alvo mais barato sem o DV, o DV deve encolher ou desaparecer.
 
-## Non-goals
+## Não objetivos
 
-NDV is not, by default, a new orchestrator, multi-agent framework, memory platform, workflow engine, model gateway, sandbox, vector database, or provider SDK.
+Por padrão, o DV não é um novo orquestrador, framework multiagente, plataforma de memória, motor de workflow, gateway de modelos, sandbox, banco vetorial ou SDK de provedor.
 
-## Scientific decision outcomes
+## Resultados científicos de decisão
 
-Valid outcomes include:
+Resultados válidos incluem:
 
 - `NO_BUILD`
 - `REUSE_ONLY`
@@ -51,8 +51,8 @@ Valid outcomes include:
 - `FULL_NDV_JUSTIFIED`
 - `INCONCLUSIVE`
 
-The project is successful if it discovers that some or all proposed NDV capabilities are unnecessary.
+O projeto tem sucesso se descobrir que algumas ou todas as capacidades propostas do DV são desnecessárias.
 
-## Historical relationship
+## Relação histórica
 
-This repository is the prospective successor to the research historically maintained in `oigorbrito/dv`. Historical experimental artifacts retain their original identity and provenance.
+Este repositório é o sucessor prospectivo da pesquisa mantida historicamente em `oigorbrito/dv`. Os artefatos experimentais históricos conservam sua identidade e proveniência originais.

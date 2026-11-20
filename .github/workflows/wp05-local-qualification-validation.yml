@@ -12,7 +12,6 @@ on:
       - 'tools/test_ndv_validate_wp04_smoke.py'
       - 'experiments/p1/wp04-executor-binding-v2.template.json'
       - 'experiments/p1/wp05-agent-scaffold-screening-v1.json'
-      - 'docs/research/WP-05-FREE-LOCAL-EXECUTOR-SCREENING.md'
       - '.github/workflows/wp05-local-qualification-validation.yml'
   workflow_dispatch:
 

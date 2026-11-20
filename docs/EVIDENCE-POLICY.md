@@ -1,16 +1,16 @@
-# NDV Evidence Policy
+# Política de evidência do DV
 
-## Evidence levels
+## Níveis de evidência
 
-- `E0 — EXPLORATORY`: isolated observation, pilot, literature signal, or engineering note. Does not authorize architecture.
-- `E1 — REPRODUCED`: repeated result in the same setup. Useful for stability, not strong causal claims.
-- `E2 — CONTROLLED`: frozen treatment/baseline, reproducible environment, complete accounting, and explicit failure attribution.
-- `E3 — HOLDOUT_CONFIRMED`: controlled result survives a prospectively sealed holdout or equivalent external confirmation.
-- `E4 — INDEPENDENTLY_REPLICATED`: result reproduced independently outside the original experimental path.
+- `E0 — EXPLORATORY`: observação isolada, piloto, sinal da literatura ou nota de engenharia. Não autoriza arquitetura.
+- `E1 — REPRODUCED`: resultado repetido na mesma configuração. Útil para estabilidade, não para afirmações causais fortes.
+- `E2 — CONTROLLED`: tratamento e linha de base congelados, ambiente reproduzível, contabilidade completa e atribuição explícita de falhas.
+- `E3 — HOLDOUT_CONFIRMED`: resultado controlado que sobrevive a um holdout selado de forma prospectiva ou a uma confirmação externa equivalente.
+- `E4 — INDEPENDENTLY_REPLICATED`: resultado reproduzido de forma independente, fora do caminho experimental original.
 
-Mandatory core capabilities normally require `E3` unless an explicit exception is documented with scope and rationale.
+Capacidades centrais obrigatórias normalmente exigem `E3`, a menos que uma exceção explícita seja documentada com escopo e justificativa.
 
-## Claim states
+## Estados de afirmação
 
 - `UNTESTED`
 - `EXPLORATORY_SIGNAL`
@@ -20,21 +20,21 @@ Mandatory core capabilities normally require `E3` unless an explicit exception i
 - `STALE`
 - `SUPERSEDED`
 
-Support is always scoped. A claim supported for a specific model family, task distribution, benchmark, cost regime, or date must not be silently generalized beyond that scope.
+O apoio é sempre limitado ao escopo. Uma afirmação apoiada para uma família de modelos, distribuição de tarefas, benchmark, regime de custo ou data específica não deve ser generalizada silenciosamente para além disso.
 
-## Evidence classes
+## Classes de evidência
 
-NDV keeps these distinct:
+O DV mantém estas classes separadas:
 
 - `LITERATURE_EVIDENCE`
 - `NDV_EXPERIMENTAL_EVIDENCE`
 - `ENGINEERING_OBSERVATION`
 
-External literature may motivate or challenge a claim, but it does not count as NDV experimental confirmation.
+A literatura externa pode motivar ou contestar uma afirmação, mas não conta como confirmação experimental do DV.
 
-## Retest triggers
+## Gatilhos de reteste
 
-Claims may become `STALE` when materially affected by:
+Afirmações podem se tornar `STALE` quando forem materialmente afetadas por:
 
 - `NEW_FRONTIER_EXECUTOR`
 - `MAJOR_MODEL_VERSION_CHANGE`
@@ -46,22 +46,22 @@ Claims may become `STALE` when materially affected by:
 - `NEW_PRIOR_ART`
 - `REPLICATION_CONTRADICTION`
 
-Staleness does not erase historical evidence; it limits current applicability.
+Tornar-se desatualizada não apaga evidência histórica; apenas limita a aplicabilidade atual.
 
-## Promotion rule
+## Regra de promoção
 
-The normative flow is:
+O fluxo normativo é:
 
 `claim -> experiment -> evidence -> decision -> architecture`
 
-Not:
+Não:
 
 `idea -> implementation`.
 
-## Negative and null results
+## Resultados negativos e nulos
 
-Negative, null, and inconclusive findings are first-class outcomes. Do not suppress failed treatments, unstable runs, or evidence that reduces NDV scope.
+Resultados negativos, nulos e inconclusivos são desfechos de primeira classe. Não suprimir tratamentos fracassados, execuções instáveis ou evidências que reduzam o escopo do DV.
 
-## Stop discipline
+## Disciplina de parada
 
-Do not alter task selection, repetitions, stopping rules, analysis method, or holdout policy because a favored treatment is leading or losing.
+Regra fonte: `docs/EXPERIMENTAL-GOVERNANCE.md` (seções *Regras centrais* e *Regras de parada*).

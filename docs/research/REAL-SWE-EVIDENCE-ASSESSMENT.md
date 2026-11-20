@@ -1,44 +1,44 @@
-# Real-SWE evidence assessment
+# Avaliação de evidência do Real-SWE
 
 Issue: #1  
-Assessment date: 2026-09-18  
-Decision: **COMPLEMENTARY**
+Data da avaliação: 2026-09-18  
+Decisão: **COMPLEMENTARY**
 
-## Scope
+## Escopo
 
-This note evaluates Specific Labs' September 2026 Real-SWE benchmark only as external evidence for NDV hypotheses around task-aware routing, model+harness selection, verifier-gated success, and cost per verified solved task.
+Esta nota avalia o benchmark Real-SWE da Specific Labs, de setembro de 2026, apenas como evidência externa para hipóteses do DV sobre roteamento sensível à tarefa, seleção de modelo+harness, sucesso condicionado a verificador e custo por tarefa verificadamente resolvida.
 
-It is not a benchmark reproduction and does not import leaderboard ordering as NDV architecture authority.
+Não é uma reprodução do benchmark e não importa a ordem de leaderboard como autoridade arquitetural do DV.
 
-## Primary-source observations
+## Observações de fonte primária
 
-Specific Labs states that Real-SWE uses licensed private production codebases and evaluates model+harness combinations rather than models in isolation. The public sample analysis covers ten tasks, with eight independent runs per task for each evaluated model+harness combination.
+A Specific Labs afirma que o Real-SWE usa bases de código privadas e licenciadas, de produção, e avalia combinações de modelo+harness, e não modelos isoladamente. A análise pública da amostra cobre dez tarefas, com oito execuções independentes por tarefa para cada combinação de modelo+harness avaliada.
 
-The benchmark page reports:
+A página do benchmark reporta:
 
-- resolution rate as pass@1 averaged over eight independent runs per task;
-- isolated sandbox execution;
-- Harbor task format;
-- verifiers injected at grading time;
-- verifiers inspired by or reusing existing codebase tests;
-- per-model/harness mean rollout cost, output-token, tool-call, and wall-clock summaries;
-- strong heterogeneity across tasks and failure categories.
+- taxa de resolução como pass@1, média de oito execuções independentes por tarefa;
+- execução em sandbox isolado;
+- formato de tarefa Harbor;
+- verificadores injetados na avaliação;
+- verificadores inspirados em testes existentes da base de código ou que os reutilizam;
+- resumos de custo médio por rollout, tokens de saída, chamadas de ferramenta e tempo de relógio por modelo/harness;
+- forte heterogeneidade entre tarefas e categorias de falha.
 
-The public page explicitly calls the shown set a small sample and offers sample access by request rather than publishing the private codebases as an ordinary public benchmark corpus.
+A página pública diz explicitamente que o conjunto mostrado é uma amostra pequena e oferece acesso à amostra mediante solicitação, em vez de publicar as bases privadas como um corpus público comum de benchmark.
 
-## Reproducibility boundary
+## Limite de reprodutibilidade
 
-The following are not publicly available in a form sufficient for ordinary independent reproduction:
+Os itens abaixo não estão disponíveis publicamente em forma suficiente para uma reprodução independente comum:
 
-- the licensed private repositories;
-- the complete benchmark corpus;
-- all verifier implementations;
-- raw per-rollout traces/artifacts for all reported runs;
-- a public reproducible pipeline that an independent evaluator can execute against the same private source material.
+- os repositórios privados licenciados;
+- o corpus completo do benchmark;
+- todas as implementações dos verificadores;
+- os traces/artefatos brutos por rollout de todas as execuções reportadas;
+- um pipeline público reproduzível que um avaliador independente possa executar sobre o mesmo material-fonte privado.
 
-A web search on 2026-09-18 found secondary analyses but no independent reproduction of the published Real-SWE run.
+Uma busca na web em 2026-09-18 encontrou análises secundárias, mas nenhuma reprodução independente da execução publicada do Real-SWE.
 
-Therefore:
+Portanto:
 
 ```text
 PUBLISHER_RUN != INDEPENDENT_REPLICATION
@@ -46,28 +46,28 @@ PUBLIC_AGGREGATES != RAW_ROLLOUT_DATA
 PRIVATE_TASK_ACCESS != PUBLIC_REPRODUCIBILITY
 ```
 
-## Model-versus-harness attribution
+## Atribuição entre modelo e harness
 
-Real-SWE intentionally measures complete model+harness combinations. That is useful for NDV's system-level executor-selection hypothesis, but it means the public results do not isolate scaffold quality from model quality.
+O Real-SWE mede intencionalmente combinações completas de modelo+harness. Isso é útil para a hipótese de seleção de executor no nível do sistema do DV, mas significa que os resultados públicos não isolam a qualidade do scaffold da qualidade do modelo.
 
-Allowed use:
+Uso permitido:
 
-- evidence that end-to-end model+harness composition matters;
-- evidence that task-specific heterogeneity is material;
-- evidence that verifier-gated success should dominate self-report;
-- evidence that cost and token use vary materially between compositions.
+- evidência de que a composição ponta a ponta de modelo+harness importa;
+- evidência de que a heterogeneidade específica por tarefa é material;
+- evidência de que o sucesso condicionado a verificador deve prevalecer sobre a autodeclaração;
+- evidência de que custo e uso de tokens variam materialmente entre composições.
 
-Disallowed use:
+Uso não permitido:
 
-- claim that a model alone caused a published score;
-- claim that a harness alone caused a published score;
-- use leaderboard rank as direct executor authority in NDV.
+- afirmar que um modelo, sozinho, causou uma pontuação publicada;
+- afirmar que um harness, sozinho, causou uma pontuação publicada;
+- usar a posição no leaderboard como autoridade direta de executor no DV.
 
-## Cost/accounting fit
+## Adequação a custo e contabilidade
 
-Specific Labs publishes mean estimated rollout costs and aggregate output-token/tool-call/wall-clock views by model+harness and task.
+A Specific Labs publica custos médios estimados por rollout e visões agregadas de tokens de saída, chamadas de ferramenta e tempo de relógio por modelo+harness e por tarefa.
 
-This is directionally compatible with NDV metrics such as:
+Isso é direcionalmente compatível com métricas do DV como:
 
 ```text
 verified_success_rate
@@ -76,33 +76,33 @@ estimated_cost / verified_solved_task
 failure_class / task_family
 ```
 
-However the public material does not expose enough raw accounting detail to establish metric-equivalence with NDV's accounting contract. NDV should therefore treat the benchmark's cost/token values as external comparative signals, not directly merge them into internal accounting.
+No entanto, o material público não expõe detalhe bruto de contabilidade suficiente para estabelecer equivalência de métrica com o contrato de contabilidade do DV. O DV deve, portanto, tratar os valores de custo/tokens do benchmark como sinais comparativos externos, e não integrá-los diretamente à contabilidade interna.
 
-## Failure-taxonomy fit
+## Adequação da taxonomia de falhas
 
-The public failure taxonomy includes:
+A taxonomia pública de falhas inclui:
 
-- unverified assumption;
-- missed requirement;
-- integration error;
-- regression;
-- wrong file.
+- premissa não verificada;
+- requisito não atendido;
+- erro de integração;
+- regressão;
+- arquivo errado.
 
-These categories are useful as candidate external signals for NDV failure attribution and escalation design. They should be mapped explicitly rather than copied as canonical NDV categories.
+Essas categorias são úteis como sinais externos candidatos para a atribuição de falhas e o desenho de escalonamento no DV. Devem ser mapeadas explicitamente, e não copiadas como categorias canônicas do DV.
 
-## Independent commentary
+## Comentário independente
 
-Recent secondary coverage consistently notes the benchmark's main limitations:
+A cobertura secundária recente destaca consistentemente as principais limitações do benchmark:
 
-- publisher-designed/run/graded;
-- small public sample;
-- private tasks/codebases constrain independent replication;
-- model+harness confounding is intentional;
-- adjacent leaderboard ordering should not be treated as precise authority.
+- desenhado, executado e avaliado pelo próprio publicador;
+- amostra pública pequena;
+- tarefas e bases privadas limitam a replicação independente;
+- a confusão entre modelo e harness é intencional;
+- a ordem de leaderboard vizinha não deve ser tratada como autoridade precisa.
 
-No true independent replication was identified during this assessment.
+Nenhuma replicação independente verdadeira foi identificada durante esta avaliação.
 
-## Decision
+## Decisão
 
 ```text
 REAL_SWE_EVIDENCE = COMPLEMENTARY
@@ -116,36 +116,36 @@ MODEL_ONLY_ATTRIBUTION = NOT_SUPPORTED
 HARNESS_ONLY_ATTRIBUTION = NOT_SUPPORTED
 ```
 
-### Why not ADMISSIBLE as primary evidence
+### Por que não ADMISSIBLE como evidência primária
 
-The benchmark is useful and materially relevant, but the current public evidence does not satisfy the stronger standard needed for independent reproducibility or causal attribution.
+O benchmark é útil e materialmente relevante, mas a evidência pública atual não satisfaz o padrão mais forte necessário para reprodutibilidade independente ou atribuição causal.
 
-### Why not INCONCLUSIVE or REJECT
+### Por que não INCONCLUSIVE ou REJECT
 
-The methodology and published aggregate measurements are sufficiently concrete to inform hypothesis formation, external validity checks, task-aware routing experiments, and cost-aware experiment design.
+A metodologia e as medições agregadas publicadas são concretas o suficiente para orientar a formação de hipóteses, verificações de validade externa, experimentos de roteamento sensível à tarefa e desenho de experimentos sensível a custo.
 
-## NDV usage rule
+## Regra de uso no DV
 
-Real-SWE may inform experiment design and candidate metrics. It must not by itself:
+O Real-SWE pode orientar o desenho de experimentos e métricas candidatas. Ele não pode, por si só:
 
-- select a canonical executor;
-- justify an architecture change;
-- establish causal superiority of a model or harness;
-- override NDV's own verifier/evidence gates;
-- substitute for internal controlled trials.
+- selecionar um executor canônico;
+- justificar uma mudança de arquitetura;
+- estabelecer superioridade causal de um modelo ou harness;
+- substituir os gates próprios de verificador/evidência do DV;
+- substituir trials controlados internos.
 
-NDV should test any derived hypothesis on its own controlled corpus and account all outcomes under its own evidence contract.
+O DV deve testar qualquer hipótese derivada no próprio corpus controlado e contabilizar todos os resultados sob o próprio contrato de evidência.
 
-## Sources
+## Fontes
 
-Primary:
-- Specific Labs, Real-SWE benchmark: https://realswe.withspecific.com/
-- Specific Labs benchmark mirror/page: https://withspecific.com/benchmarks/real-swe
+Primárias:
+- Specific Labs, benchmark Real-SWE: https://realswe.withspecific.com/
+- Espelho/página do benchmark da Specific Labs: https://withspecific.com/benchmarks/real-swe
 
-Secondary review used only for replication/limitations cross-check:
+Revisão secundária usada apenas para verificação cruzada de replicação e limitações:
 - VarOps: https://varops.com/coding-agents-most-common-failure-is-missed-requirements-not-broken-code-heres-what-to-check-in-a-pilot/
 - Creative AI News: https://www.creativeainews.com/articles/real-swe-coding-agents-private-codebases-2026/
 
-## Naming warning
+## Alerta de nome
 
-Specific Labs' **Real-SWE** should not be conflated with separately named **RealSWE** research/papers unless provenance is explicitly checked. Similar naming is not evidence identity.
+O **Real-SWE** da Specific Labs não deve ser confundido com artigos ou pesquisas separadas chamados **RealSWE**, a menos que a proveniência seja verificada explicitamente. Nomes parecidos não são identidade de evidência.

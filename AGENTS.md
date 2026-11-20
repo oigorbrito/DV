@@ -9,7 +9,7 @@ Este arquivo combina duas camadas que se aplicam simultaneamente; nenhuma substi
 
 ## Operating posture
 
-1. NDV is research-first. Do not implement a runtime, router, orchestrator, memory system, workflow engine, model gateway, generic agent framework, or adaptive controller unless an approved experiment and architecture gate explicitly require it.
+1. Decisões de arquitetura são derivadas de evidência, não prescritas. Um componente (runtime, roteador, orquestrador, memória, controlador) entra no DV somente quando um experimento congelado mostra que ele vence o núcleo na métrica pré-registrada. Antes disso, o núcleo é o referencial.
 2. Existing ecosystem capabilities must be evaluated for reuse before custom implementation.
 3. Experimental contracts are immutable after freeze. If semantics change, create a new version; do not silently edit frozen evidence.
 4. Historical artifacts in `oigorbrito/dv` must not be rewritten or rebranded as if they were originally NDV artifacts.
@@ -46,7 +46,7 @@ Verification must be attributable, versioned, reproducible, and independent of t
 
 ## Provenance
 
-New NDV work belongs in this repository. Historical DV evidence remains authoritative at its original source repository/commit. Reference legacy artifacts by repository, path, commit and hash when needed.
+New DV work belongs in this repository. Historical DV evidence remains authoritative at its original source repository/commit. Reference legacy artifacts by repository, path, commit and hash when needed.
 
 ## Nome canônico
 
@@ -68,11 +68,29 @@ MECHANISM_AVAILABLE != MECHANISM_NECESSARY
 
 Modo de engenharia atual: `REUSE_ONLY` (ver README). Fases experimentais P1–P5 não começam só porque uma fase anterior existe.
 
-Pontos de partida de governança: `docs/EXPERIMENTAL-GOVERNANCE.md`, `docs/EVIDENCE-POLICY.md`, `docs/research/EXPERIMENTAL-PROGRAM.md`, `docs/research/UPSTREAM-REUSE-PLAN.md`.
+Pontos de partida de governança: `docs/EXPERIMENTAL-GOVERNANCE.md`, `docs/EVIDENCE-POLICY.md`, `docs/research/UPSTREAM-REUSE-PLAN.md`.
 
 ## Inventário de proveniência DV
 
 O histórico DV (repositório de origem, commits e hashes) está em `provenance/dv-legacy-manifest.json`. Evidência legada não é reclassificada como evidência DV.
+
+## Mapa de autoridade
+
+Cada tema tem uma única fonte. Os demais documentos apontam para ela e não repetem a regra.
+
+| Tema | Fonte autoritativa |
+|---|---|
+| Postura, verificação, proveniência e nome canônico | `AGENTS.md` (este arquivo) |
+| Níveis de evidência (E0–E4) e estados de afirmação | `docs/EVIDENCE-POLICY.md` |
+| Objetivo, métrica primária e vocabulário de decisão | `docs/PROJECT-OBJECTIVE.md` |
+| Protocolo experimental e regras de parada | `docs/EXPERIMENTAL-GOVERNANCE.md` |
+| Ordem de arquitetura e bloqueios por padrão | `docs/ARCHITECTURE-GOVERNANCE.md` |
+| Estado e critérios do reuso upstream | `docs/research/UPSTREAM-REUSE-PLAN.md` |
+| Protocolo Luna (D0, D1, D2) | `experiments/luna-only/luna-composition-protocol-v1.json` |
+| Maturidade OSPS | `docs/MATURITY.md` |
+| Estrutura observada do repositório | `docs/ARCHITECTURE.md` |
+| Testes e verificação canônica | `docs/TESTING.md` |
+| Próximas etapas (plano, não regra) | `docs/ROADMAP.md` |
 
 ## Parte B — Evidência e maturidade (template)
 
@@ -93,7 +111,7 @@ Antes de alterar código ou documentação:
    - `UNKNOWN_EXTERNAL`: o requisito depende de um estado do repositório/plataforma que este harness não consegue comprovar localmente.
    - `NOT_APPLICABLE`: o gatilho documentado não é atualmente verdadeiro.
 5. Rótulos do produto como `prototype`, `MVP` ou `production` são apenas descritivos. Eles não promovem a maturidade OSPS.
-6. Se um release for observado (arquivo de estado ou tag Git), execute as verificações condicionadas ao release e relate cada nova lacuna aplicável.
+6. Se um release for observado (arquivo de estado com `release.made=true` ou pelo menos duas tags Git), execute as verificações condicionadas ao release e relate cada nova lacuna aplicável. Uma única tag não conta como release.
 7. Se o número de mantenedores ou a população de usuários mudar materialmente, sinalize `MATURITY_REASSESSMENT_REQUIRED`; não promova silenciosamente o nível-alvo.
 8. Não adicione uma afirmação de segurança, release, arquitetura ou conformidade sem que a evidência de suporte seja versionada ou verificável externamente.
 9. Prefira a menor alteração que feche uma lacuna documentada. Não adicione controles apenas por aparência.

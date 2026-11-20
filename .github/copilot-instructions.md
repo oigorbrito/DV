@@ -1,8 +1,8 @@
-Use `AGENTS.md` as the repository-wide evidence contract.
+Use `AGENTS.md` como o contrato de evidência de todo o repositório.
 
-Core principle: **IMPLEMENTED != EXECUTED, EXECUTED != VERIFIED**.
+Princípio central: **IMPLEMENTED != EXECUTED, EXECUTED != VERIFIED**.
 
-Before implementation, read `policy/project-state.json` and the documents under `docs/`.
-Treat `PASS`, `GAP`, `UNKNOWN_EXTERNAL`, and `NOT_APPLICABLE` as distinct states.
-Do not claim tests, builds, checks, releases, maturity levels, or security controls passed unless the relevant evidence was actually executed or observed.
-When a first release or maturity-relevant change is observed, run `python scripts/harness.py` and report newly applicable gaps before declaring the task complete.
+Antes de implementar, leia `policy/project-state.json` e os documentos em `docs/`.
+Trate `PASS`, `GAP`, `UNKNOWN_EXTERNAL` e `NOT_APPLICABLE` como estados distintos.
+Não afirme que testes, builds, verificações, releases, níveis de maturidade ou controles de segurança passaram, a menos que a evidência correspondente tenha sido de fato executada ou observada.
+Quando um primeiro release ou uma mudança relevante para a maturidade for observado, execute `python scripts/harness.py` e informe as novas lacunas aplicáveis antes de declarar a tarefa concluída.
