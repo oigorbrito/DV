@@ -149,13 +149,40 @@ def test_daemon_error_is_infrastructure_not_the_command_result():
 
 
 def test_missing_docker_binary_is_infrastructure():
+    # Nenhuma chamada ao docker funciona (run, inspect, rm): o finally não pode vazar exceção.
+    calls = []
+
     def missing(argv, **kwargs):
-        if argv[1] == "run":
-            raise FileNotFoundError("docker")
-        return subprocess.CompletedProcess(argv, 1, stdout="", stderr="")
+        calls.append(argv[1])
+        raise FileNotFoundError(2, "No such file", "docker")
 
     result = dcr.run_container(dcr.Quotas(), CMD, runner=missing)
     assert result.daemon_error is True and result.exit_code == dcr.EXIT_INFRA
+    assert result.oom_killed is None           # inspect falhou: não medido
+    assert result.cleanup_error is not None    # rm falhou: registrado, não ignorado em silêncio
+    assert calls == ["run", "inspect", "rm"]  # a limpeza foi tentada mesmo após falha do run
+
+
+def test_cleanup_failure_after_successful_run_is_infrastructure():
+    # O comando terminou bem, mas o container não pôde ser removido: não é resultado limpo.
+    def rm_fails(argv, **kwargs):
+        if argv[1] == "rm":
+            raise subprocess.SubprocessError("daemon went away")
+        return subprocess.CompletedProcess(argv, 0, stdout="false\n" if argv[1] == "inspect" else "", stderr="")
+
+    result = dcr.run_container(dcr.Quotas(), CMD, runner=rm_fails)
+    assert result.exit_code == dcr.EXIT_INFRA
+    assert result.daemon_error is True
+    assert "SubprocessError" in result.cleanup_error
+
+
+def test_cli_without_docker_on_path_returns_125_not_an_exception(monkeypatch, tmp_path, capsys):
+    # Sem simulador: subprocess real, com PATH vazio. O docker não é encontrado.
+    monkeypatch.setenv("PATH", str(tmp_path))
+    code = dcr.main(["--", *CMD])
+    assert code == dcr.EXIT_INFRA
+    out = capsys.readouterr().out
+    assert '"daemon_error": true' in out
 
 
 def test_failed_inspect_gives_unmeasured_oom_not_false():

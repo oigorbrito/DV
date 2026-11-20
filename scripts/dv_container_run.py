@@ -120,6 +120,7 @@ class ContainerResult:
     duration_ms: float
     stdout: str
     stderr: str
+    cleanup_error: str | None = None  # falha ao ler OOMKilled ou remover o container (infra)
 
     @property
     def cmd_timeouts(self) -> int:
@@ -152,6 +153,7 @@ def run_container(quotas: Quotas, command: Sequence[str], *, mounts: Sequence[st
     exit_code: int | None = None
     timed_out = False
     daemon_error = False
+    cleanup_error: str | None = None
     stdout = stderr = ""
     try:
         cp = runner(argv, capture_output=True, text=True, timeout=quotas.timeout_s, check=False)
@@ -162,13 +164,19 @@ def run_container(quotas: Quotas, command: Sequence[str], *, mounts: Sequence[st
         stdout = exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
         stderr = exc.stderr.decode() if isinstance(exc.stderr, bytes) else (exc.stderr or "")
         _docker(runner, ["kill", name], timeout=30)
-    except OSError as exc:  # docker ausente do PATH
+    except (OSError, subprocess.SubprocessError) as exc:  # docker ausente do PATH ou falha do daemon
         daemon_error = True
-        stderr = f"could not start docker: {exc}"
+        stderr = f"could not run docker: {type(exc).__name__}: {exc}"
     finally:
+        # Limpeza protegida: a leitura de OOMKilled e a remoção nunca levantam exceção.
         oom_killed = _inspect_oom(runner, name)
-        _docker(runner, ["rm", "-f", name], timeout=60)
+        try:
+            _docker(runner, ["rm", "-f", name], timeout=60)
+        except (OSError, subprocess.SubprocessError) as exc:
+            cleanup_error = f"{type(exc).__name__}: {exc}"
 
+    if cleanup_error is not None:
+        daemon_error = True  # container possivelmente não removido: falha de infraestrutura, não do comando
     if timed_out:
         exit_code = EXIT_TIMEOUT
     elif daemon_error:
@@ -184,6 +192,7 @@ def run_container(quotas: Quotas, command: Sequence[str], *, mounts: Sequence[st
         duration_ms=(time.perf_counter() - started) * 1000.0,
         stdout=_clip(stdout),
         stderr=_clip(stderr),
+        cleanup_error=cleanup_error,
     )
     if ledger is not None:
         ledger.append("infra_finished", result.as_dict())
@@ -193,8 +202,8 @@ def run_container(quotas: Quotas, command: Sequence[str], *, mounts: Sequence[st
 def _inspect_oom(runner: Runner, name: str) -> bool | None:
     try:
         cp = _docker(runner, ["inspect", "-f", "{{.State.OOMKilled}}", name], timeout=30)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
+    except (OSError, subprocess.SubprocessError):
+        return None  # binário ausente ou daemon indisponível: não medido
     if cp.returncode != 0:
         return None  # container ausente ou daemon indisponível: não medido, nunca False por padrão
     value = (cp.stdout or "").strip().lower()
@@ -242,6 +251,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except QuotaError as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 2
+    except (OSError, subprocess.SubprocessError) as exc:  # falha de infraestrutura fora da telemetria
+        print(f"infrastructure error: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return EXIT_INFRA
 
     print(json.dumps(result.as_dict(), indent=2, ensure_ascii=False))
     return result.exit_code if result.exit_code is not None else EXIT_INFRA

@@ -45,6 +45,7 @@ T_LLM = ("tests/test_llm_client.py", "tests/test_properties.py")
 T_TOOLS = ("tests/test_tool_executor.py", "tests/test_properties.py")
 T_PROTO = ("tests/test_protocol.py",)
 T_CONT = ("tests/test_container_run.py",)
+T_CANARY = ("tests/test_canary.py",)
 SCRIPTS = "scripts"
 T_LEDGER = ("tests/test_ledger.py", "tests/test_agent_loop.py")
 
@@ -233,6 +234,19 @@ MUTANTS: tuple[Mutant, ...] = (
            "    if timed_out:\n        exit_code = EXIT_TIMEOUT",
            "    if False:\n        exit_code = EXIT_TIMEOUT",
            "timeout reported with the killed process code, not 124", T_CONT),
+    # --- ajuste 3 (fechamento): limpeza protegida e isca somente leitura ---------------
+    Mutant("M45", f"{SCRIPTS}/dv_canary_check.py",
+           "            if not path.is_file() or path.read_text(encoding=\"utf-8\") != ORIGINAL:",
+           "            if False:",
+           "read-only control runs without verifying provisioned baits", T_CANARY),
+    Mutant("M46", f"{SCRIPTS}/dv_container_run.py",
+           "            cleanup_error = f\"{type(exc).__name__}: {exc}\"",
+           "            pass",
+           "cleanup failure swallowed (container may leak silently)", T_CONT),
+    Mutant("M47", f"{SCRIPTS}/dv_container_run.py",
+           "        daemon_error = True  # container possivelmente não removido: falha de infraestrutura, não do comando",
+           "        pass",
+           "cleanup failure does not signal infrastructure (exit 125 lost)", T_CONT),
 )
 
 

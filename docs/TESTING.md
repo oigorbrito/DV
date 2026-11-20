@@ -31,7 +31,7 @@ cd tools && python -m unittest discover -p "test_*.py" -v
 - `tests/test_context_manager.py`: testes do Módulo 3 (`src/dv_harness/context_manager.py`). Cobrem preservação de `system`/`user`/`assistant`, janela de observações, `tool_call_id`, não-mutação do histórico e contagem de caracteres. Executar: `python -m pytest tests/test_context_manager.py -v`.
 - Protocolo v2 (`tests/test_protocol.py`, `tests/test_ledger.py`): tabela de outcome exaustiva, bases de custo, conformidade entre contrato JSON v2 e código, e hash do v1. Ledger: durabilidade, reconciliação de chamadas em voo, fsync.
 - Testes de propriedade (`tests/test_properties.py`, hypothesis): I1 conservação da contabilidade, I2 imutabilidade do log frente ao masking, I3 confinamento sem exceção e sem efeito externo, I4 totalidade dos estados, I5 nenhum efeito colateral após quebra de orçamento, I6 ausência de sentinelas.
-- Verificação por mutação (POSIX/WSL): `python scripts/dv_mutation_check.py --workdir <dir> --json <arquivo>`. Roda 44 mutantes (M01–M44) em cópia descartável e exige linha de base verde. Mutante morto significa que algum teste falhou. Resultado neste branch (WSL, `feat/baseline-calibration-harness`): 42 mortos, 2 sobreviventes pré-existentes (já presentes em `8cc338d`, não corrigidos aqui): M07 (`max_steps` conta chamadas falhas) e M21 (ENAMETOOLONG escapando como exceção). São lacunas de teste conhecidas.
+- Verificação por mutação (POSIX/WSL): `python scripts/dv_mutation_check.py --workdir <dir> --json <arquivo>`. Roda 47 mutantes (M01–M47) em cópia descartável e exige linha de base verde. Mutante morto significa que algum teste falhou. Resultado neste branch (WSL, `feat/baseline-calibration-harness`): 45 mortos, 2 sobreviventes pré-existentes (já presentes em `8cc338d`, não corrigidos aqui): M07 (`max_steps` conta chamadas falhas) e M21 (ENAMETOOLONG escapando como exceção). São lacunas de teste conhecidas.
 - Protocolo v3 (`tests/test_protocol.py`): conformidade do contrato v3 com o código, sha256 fixo do v2 e do v1, quatro baldes de tokens, classificação de falhas e `false_finish`/`false_finish_rate`. Propriedades (`tests/test_properties.py`): só `PROTOCOL_ERROR` consecutivo atinge `error_limit`; baldes são soma só se todas as chamadas medem.
 - Wrapper de container (`tests/test_container_run.py`): argv com quotas fixas, `--network none`, timeout com `docker kill`, OOM e falha de daemon como flags de infraestrutura, ledger `infra_finished`. Usa `docker` simulado; não exige daemon.
 - Canário de ambiente (I3b): `python scripts/dv_canary_check.py --workdir <dir>`. Exige POSIX (WSL/Linux); no Windows o script não é válido. Falso no ambiente de medição (ver ARCHITECTURE). `tests/test_canary.py` prova que o detector acusa escape e aceita um executor contido.
@@ -48,3 +48,29 @@ cd tools && python -m unittest discover -p "test_*.py" -v
 - OSPS Level 3: a documentação deve explicar quando/como os testes são executados, e alterações importantes devem adicionar ou atualizar testes de acordo com a política documentada.
 
 O harness não afirma que um repositório está no Level 2/3 apenas porque este arquivo existe.
+
+## Evidência de execução em container (ajuste 3)
+
+Medida com o código desta branch, em Docker Desktop 29.9.3 (Linux), imagem `dv-harness:local`.
+Quotas em todas as execuções: `--cpus 1`, `--memory 512m` (sem swap), `--pids-limit 256`,
+`--network none`, `--cap-drop ALL`, `--read-only`, usuário não-root. Entrada: `scripts/dv_container_run.py`.
+
+| Caso | Comando (resumo) | Resultado observado | Interpretação |
+|---|---|---|---|
+| **I3b, isca somente leitura** | `--mount <ctrl>:/canary:ro` + `dv_canary_check.py --control-dir /canary` | exit 0; `I3b holds: True`; `control_dir_writable_by_this_process: False`; 5 tentativas `contained` | Nenhuma via de escape alterou a isca montada como somente leitura. |
+| I3b, contraste (isca gravável) | `--mount <ctrl>:/canary` (rw), mesmo comando | exit 1; `I3b holds: False`; 5 tentativas `ESCAPED`; `writable: True` | Prova que o detector acusa escape quando a isca é gravável. |
+| Sonda de escrita direta | `sh -c 'echo x > /canary/probe.txt'` com `:ro` | `cannot create /canary/probe.txt: Read-only file system` | A recusa vem do mount, não do comando. |
+| **Timeout** | `--timeout-s 3 -- sleep 60` | exit **124**; `timed_out: true`; `cmd_timeouts: 1`; container removido | Telemetria de infraestrutura, não falha do agente. |
+| **OOM** | `--memory 64m -- python -c "x = b'a' * 300MiB"` | exit **137**; `oom_killed: true`; container removido | `State.OOMKilled` lido antes da remoção. |
+| Docker ausente (`PATH` vazio) | `dv_container_run.py -- echo x` | exit **125**; `daemon_error: true`; sem traceback | Falha de infraestrutura tratada sem exceção não capturada. |
+
+Em todos os casos, `docker ps -a --filter name=dv-run-` retornou 0 após a execução (limpeza garantida
+no `finally`). Os testes automatizados correspondentes estão em `tests/test_container_run.py`
+(inclui falha só na limpeza, que vira exit 125) e `tests/test_canary.py` (modo `--control-dir`).
+
+**Limite do I3b com isca somente leitura.** O resultado `True` mede que o controle está fora do
+alcance de escrita do agente. Não mede que `run_bash` esteja confinado: dentro de `/work` (rw), o agente
+ainda pode escrever à vontade. O benchmark exige os dois fatos separados.
+
+Para reproduzir: `python scripts/dv_canary_check.py --provision <dir-host-fora-do-repo>`, depois o
+comando de container da tabela acima.
