@@ -1,0 +1,7 @@
+# Fins de linha canônicos: LF no repositório e no checkout, em qualquer SO.
+# Sem isto, core.autocrlf=true (Windows) grava CRLF e altera o sha256 de
+# contratos e evidências congeladas (ex.: experiments/p1/run-accounting-contract-v1.json).
+* text=auto eol=lf
+
+# Contratos congelados e evidência versionada: bytes exatos, sem conversão.
+experiments/** -text

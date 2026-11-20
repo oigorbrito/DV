@@ -25,7 +25,7 @@
 
 ### 1.1 Achado que muda o plano
 
-**O conteúdo das PRs #75 e #77 não está na `main`.** Ambas foram mescladas nos branches-base (`chore/apply-template-latest` e `research/external-agent-engineering-claims`), não na `main`. Consequência: `docs/research/EXTERNAL-FINDINGS-2026.md`, `tools/dv_claim_experiment_gate.py`, `experiments/p1/claim-experiment-registry-v1.json` e `.github/workflows/run-claim-experiment.yml` **não estão na `main`**. A auditoria de documentação acima considerou o que está na `main`, mais o branch `research/external-agent-engineering-claims`.
+**O conteúdo das PRs #75 e #77 não está na `main`.** Ambas foram mescladas nos branches-base (`chore/apply-template-latest` e `research/external-agent-engineering-claims`), não na `main`. Consequência: `docs/research/EXTERNAL-FINDINGS-2026.md`, `tools/dv_claim_experiment_gate.py`, `experiments/p1/claim-experiment-registry-v1.json` e `.github/workflows/run-claim-experiment.yml` **não estão na `main`**. A auditoria de documentação acima considerou o que está na `main`, mais o branch `research/external-agent-engineering-claims`. **Nota de branch (sanitização em `feat/modular-harness-core`, `94cd25b`):** esses quatro artefatos pertencem ao branch `feat/ci-claim-experiment-runner` (`1a8ebb0`) e não existem neste branch.
 
 ---
 
@@ -67,7 +67,7 @@ Esta fase transforma a política de evidência em código verificável, sem cria
 
 | ID | Item | Entrega | Critério de aceite |
 |---|---|---|---|
-| R1.1 | Evidence Ledger (schema + validador) | `experiments/schemas/evidence-ledger-v1.json` e validador Python | Valida os artefatos já existentes (WP-03, WP-04 Stage 1, planner Luna) **sem reescrevê-los**. Rejeita registro sem classe de evidência (`LITERATURE`, `NDV_EXPERIMENTAL`, `ENGINEERING_OBSERVATION`) ou sem nível E0–E4 |
+| R1.1 | Evidence Ledger (schema + validador) | `experiments/schemas/dv-evidence-contracts-v1.json` e validador `tools/dv_ledgers.py` | Valida os artefatos já existentes (WP-03, WP-04 Stage 1, planner Luna) **sem reescrevê-los**. Rejeita registro sem classe de evidência (`LITERATURE`, `NDV_EXPERIMENTAL`, `ENGINEERING_OBSERVATION`) ou sem nível E0–E4 |
 | R1.2 | Execution Ledger (schema + validador) | Schema de custo total por invocação: tokens de planejamento, execução, verificação, falhas, retries, latência | Soma de custos reproduzível a partir de `usage.json`; falha de invocação conta no total |
 | R1.3 | `VerificationResult` | Contrato com verificador, versão, hash e veredito | Veredito `PASS`/`FAIL`/`INCONCLUSIVE` vinculado a verificador independente do executor (regra "executor self-report ≠ verified") |
 | R1.4 | `CapabilityProfile` | Contrato que descreve o que um executor/composição pode mudar e quando | Preenchido para Luna direto e para o D1 do protocolo; validado por teste |
@@ -152,9 +152,9 @@ R1 e R2.1 são o trabalho de código que **pode começar agora** sem violar a go
 | R1.2 | Invocation record e `summarize_treatment` (componentes de tokens, falhas contadas) | Testes de falha contada e de tratamento incorreto | **Total de tokens não definido.** Não se sabe se `input_tokens` inclui `cached_input_tokens`. Por isso o total fica `UNRESOLVED`. |
 | R1.3 | `VerificationResult` com independência do verificador e regra "PASS exige três condições" | `is_verified_solved` ignora o relato do executor | Nenhum verificador real foi vinculado ainda. |
 | R1.4 | `CapabilityProfile` com vocabulário de `UPSTREAM-REUSE-PLAN` | Teste de dimensão fixa vs. mutável | Não preenchido para nenhum executor real. |
-| R2.1 | `tools/dv_d0_runner.py`, modo dry-run | Recusa com orçamento não congelado; nunca inicia processo (testado com `subprocess` substituído por erro) | `experiments/luna-only/luna-d0-budget-v1.json` está `UNFROZEN_TEMPLATE` com valores `null`. **Você precisa escolher e congelar os limites** antes que o runner planeje qualquer tarefa. |
+| R2.1 | `tools/dv_d0_runner.py`, modo dry-run | Recusa com orçamento não congelado; nunca inicia processo (testado com `subprocess` substituído por erro) | `experiments/luna-only/luna-d0-budget-v1.json` está `DEFERRED_NOT_IN_USE` com valores `null` (o runner exige `FROZEN`). **Você precisa escolher e congelar os limites** antes que o runner planeje qualquer tarefa. |
 
-Estado no repositório: o runner recusa com `D0 budget is 'UNFROZEN_TEMPLATE'`, e não há nenhum registro `ADMITTED_FROZEN`, então nenhuma tarefa seria planejada mesmo com orçamento congelado.
+Estado no repositório: o runner recusa com `D0 budget is 'DEFERRED_NOT_IN_USE', not FROZEN`, e não há nenhum registro `ADMITTED_FROZEN`, então nenhuma tarefa seria planejada mesmo com orçamento congelado.
 
 Próximo passo: **R2.2** (execução) só pode começar depois de três coisas: orçamento congelado, pelo menos uma admissão `ADMITTED_FROZEN` e a definição do total de tokens (R1.2).
 

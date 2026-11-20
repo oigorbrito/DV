@@ -6,12 +6,15 @@
 2. Trabalhe em uma branch em vez de fazer commit diretamente na branch primária.
 3. Mantenha as alterações delimitadas e passíveis de revisão.
 4. Adicione ou atualize testes quando o comportamento mudar.
-5. Execute localmente a verificação canônica:
+5. Execute localmente a verificação canônica (dependências fixadas em `requirements-dv-harness.txt`):
 
 ```bash
+python -m pip install -r requirements-dv-harness.txt
 python scripts/harness.py
-python -m unittest discover -s tests -v
+python -m pytest tests -v
 ```
+
+Canário I3b e mutação exigem POSIX (Linux ou WSL). Ver `docs/TESTING.md`.
 
 6. Abra um pull request descrevendo a alteração e as evidências executadas.
 7. Não informe uma verificação como aprovada a menos que ela tenha sido executada na alteração atual.

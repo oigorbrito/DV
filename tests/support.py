@@ -10,7 +10,6 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
-from collections.abc import Callable
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -89,9 +88,6 @@ class ScriptedLLM:
         if callable(item) and not isinstance(item, LLMResponse):
             return item(messages)
         return item
-
-
-Factory = Callable[[list[dict[str, Any]]], LLMResponse]
 
 
 def tool_contents(messages: list[dict[str, Any]]) -> list[str]:

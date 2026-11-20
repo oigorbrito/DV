@@ -36,21 +36,21 @@ def ex(tmp_path):
 
 
 def test_read_file_numbers_lines(ex, tmp_path):
-    (tmp_path / "a.txt").write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    (tmp_path / "a.txt").write_text("alpha\nbeta\ngamma\n", encoding="utf-8", newline="\n")
     r = ex.read_file("a.txt")
     assert r.ok and r.error is None and r.truncated is False
     assert r.output == "1\talpha\n2\tbeta\n3\tgamma"
 
 
 def test_read_file_line_range_is_inclusive_one_based(ex, tmp_path):
-    (tmp_path / "a.txt").write_text("1\n2\n3\n4\n5\n", encoding="utf-8")
+    (tmp_path / "a.txt").write_text("1\n2\n3\n4\n5\n", encoding="utf-8", newline="\n")
     r = ex.read_file("a.txt", start_line=2, end_line=4)
     assert r.ok
     assert r.output == "2\t2\n3\t3\n4\t4"
 
 
 def test_read_file_end_line_beyond_eof_is_clamped(ex, tmp_path):
-    (tmp_path / "a.txt").write_text("x\ny\n", encoding="utf-8")
+    (tmp_path / "a.txt").write_text("x\ny\n", encoding="utf-8", newline="\n")
     assert ex.read_file("a.txt", start_line=2, end_line=99).output == "2\ty"
 
 

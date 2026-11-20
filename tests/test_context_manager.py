@@ -63,7 +63,7 @@ def test_system_and_initial_user_prompt_are_preserved():
 def test_all_assistant_messages_and_tool_calls_are_untouched():
     msgs = _history(15)
     out = ContextManager(keep_recent_observations=2).prepare(msgs).messages
-    for original, prepared in zip(msgs, out):
+    for original, prepared in zip(msgs, out, strict=True):
         if original["role"] == "assistant":
             assert prepared == original
 
@@ -88,7 +88,7 @@ def test_masking_keeps_tool_call_id_and_metadata():
     out = ContextManager(keep_recent_observations=1).prepare(msgs).messages
     tools_in = [m for m in msgs if m["role"] == "tool"]
     tools_out = [m for m in out if m["role"] == "tool"]
-    for before, after in zip(tools_in, tools_out):
+    for before, after in zip(tools_in, tools_out, strict=True):
         assert after["tool_call_id"] == before["tool_call_id"]
         assert after["name"] == before["name"]
         assert set(after) == set(before)

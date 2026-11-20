@@ -348,11 +348,18 @@ def _apply_unique_replacement(text: str, old_text: str, new_text: str, path: str
     return updated, None
 
 def _kill_group(proc: subprocess.Popen[bytes]) -> None:
-    """Mata o grupo de processos do comando (POSIX). Ignora se já terminou."""
-    try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        proc.kill()
+    """Mata o grupo de processos do comando. Ignora se já terminou.
+
+    POSIX: mata o grupo inteiro (``start_new_session``). Fora do POSIX não há
+    ``killpg``; cai para ``proc.kill()``, que mata só o shell (netos podem sobreviver).
+    """
+    if os.name == "posix":
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+            return
+        except (ProcessLookupError, PermissionError):
+            pass
+    proc.kill()
 
 
 def _decode(data: bytes | str | None) -> str:

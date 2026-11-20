@@ -7,6 +7,7 @@ Executar: python -m pytest tests/test_agent_loop.py -v
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 
@@ -312,7 +313,7 @@ def test_cost_basis_zero_priced_is_counted_separately(tmp_path):
 def test_audit_keeps_raw_output_and_model_sees_truncated(tmp_path):
     loop = AgentLoop(
         ScriptedLLM([
-            make_response(calls=[call("b", "run_bash", {"command": "python3 -c 'print(\"Q\"*5000)'"})]),
+            make_response(calls=[call("b", "run_bash", {"command": f'"{sys.executable}" -c "print(\'Q\'*5000)"'})]),
             make_response(calls=[submit("s", "done")]),
         ]),
         ToolExecutor(tmp_path, max_output_chars=400),
@@ -423,7 +424,7 @@ def test_consecutive_runs_do_not_share_state(tmp_path):
 
 def test_masking_does_not_alter_log_and_reports_savings(tmp_path):
     llm = ScriptedLLM([
-        make_response(calls=[call("b1", "run_bash", {"command": "python3 -c 'print(\"x\" * 600)'"})]),
+        make_response(calls=[call("b1", "run_bash", {"command": f'"{sys.executable}" -c "print(\'x\' * 600)"'})]),
         make_response(calls=[call("b2", "run_bash", {"command": "echo ok"})]),
         make_response(calls=[submit("s", "done")]),
     ])
