@@ -84,6 +84,7 @@ class ToolResult:
     exit_code: int | None = None
     truncated: bool = False
     raw_output: str = ""
+    timed_out: bool = False
 
 
 def truncate_output(text: str, limit: int) -> tuple[str, bool]:
@@ -302,6 +303,7 @@ class ToolExecutor:
                 exit_code=None,
                 truncated=truncated,
                 raw_output=full,
+                timed_out=True,
             )
 
         combined = _decode(stdout)

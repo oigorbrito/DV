@@ -278,3 +278,36 @@ def test_tool_arguments_valid_json_but_not_object_are_rejected():
     with pytest.raises(ValueError, match="must decode to an object"):
         _ = tc.parsed_arguments
     assert ToolCall(id="c", name="read_file", arguments="").parsed_arguments == {}
+
+
+# --- baldes de tokens (contrato v3) -----------------------------------------------
+
+
+def test_token_buckets_none_when_not_exposed_never_zero():
+    resp = _client(lambda **_: _raw(content="ok")).complete(MESSAGES)
+    assert resp.uncached_input_tokens is None
+    assert resp.cache_write_tokens is None
+    assert resp.cache_read_tokens is None
+    assert resp.cached_input_tokens is None
+
+
+def test_cache_read_write_and_reasoning_are_extracted_without_double_count():
+    usage = SimpleNamespace(prompt_tokens=100, completion_tokens=20, total_tokens=120,
+                            prompt_tokens_details=SimpleNamespace(cached_tokens=40, cache_write_tokens=30),
+                            completion_tokens_details=SimpleNamespace(reasoning_tokens=7))
+    resp = _client(lambda **_: _raw(content="ok", usage_obj=usage)).complete(MESSAGES)
+    assert resp.cache_read_tokens == 40
+    assert resp.cached_input_tokens == 40          # alias da v2
+    assert resp.cache_write_tokens == 30
+    assert resp.uncached_input_tokens is None      # não exposto pelo litellm 1.110.1; nunca derivado
+    assert resp.reasoning_tokens == 7
+    assert resp.total_tokens == 120                # reasoning e cache não entram no total
+
+
+def test_cache_write_falls_back_to_cache_creation_name():
+    usage = SimpleNamespace(prompt_tokens=10, completion_tokens=2, total_tokens=12,
+                            prompt_tokens_details=SimpleNamespace(cached_tokens=None, cache_creation_tokens=5),
+                            completion_tokens_details=None)
+    resp = _client(lambda **_: _raw(content="ok", usage_obj=usage)).complete(MESSAGES)
+    assert resp.cache_write_tokens == 5
+    assert resp.cache_read_tokens is None

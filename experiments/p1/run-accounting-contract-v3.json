@@ -1,0 +1,202 @@
+{
+  "contract_id": "p1-run-accounting-v3",
+  "supersedes": "p1-run-accounting-v2",
+  "supersedes_note": "v2 (experiments/p1/run-accounting-contract-v2.json) is kept unchanged. v3 changes semantics, so it is a new version (AGENTS.md rule 3): it measures cache creation, defines the four token buckets, classifies tool failures as PROTOCOL_ERROR or DOMAIN_FAILURE, defines false_finish_rate, and records container infrastructure telemetry.",
+  "unit": "TREATMENT_RUN = frozen task x frozen treatment x frozen executor binding x frozen shaping x rollout/repetition",
+  "run_identity_fields": [
+    "task_id",
+    "treatment_id",
+    "executor_binding_id",
+    "shaping_id",
+    "repetition_index"
+  ],
+  "run_identity_status": "caller-supplied via run_id; sub-fields not yet split (UNMEASURED when run_id is null)",
+  "state_model": {
+    "layer_1_executor_status": {
+      "description": "Termination reason of the executor loop. Not evidence of success (EXECUTOR_DONE != VERIFIED_SOLVED).",
+      "precedence": [
+        "P1 provider_error: llm call failed after its retry policy (all attempts recorded)",
+        "P2 budget_exceeded: max_tokens reached by the lower bound of measured tokens",
+        "P3 budget_exceeded: max_cost_usd reached by the lower bound of known cost (known cost only)",
+        "P4 budget_unverifiable: a budget is set and the quantity it needs is unknown",
+        "P5 completed: a valid submit tool call (after the other tool calls of the same turn)",
+        "P6 error_limit_reached: consecutive turns with PROTOCOL_ERROR reached error_limit (DOMAIN_FAILURE does not count)",
+        "P7 max_steps_reached: logical successful calls reached max_steps",
+        "P8 continue"
+      ],
+      "states": [
+        "completed",
+        "max_steps_reached",
+        "budget_exceeded",
+        "budget_unverifiable",
+        "provider_error",
+        "error_limit_reached"
+      ],
+      "pre_run_validation": "invalid parameters raise ValueError before any call; no record is produced and no resource is consumed",
+      "error_limit_note": "error_limit_reached counts consecutive turns containing a PROTOCOL_ERROR (text without tool call, invalid JSON, malformed arguments, unknown tool, malformed submit, internal exception). A turn with no PROTOCOL_ERROR resets the counter, including a turn with DOMAIN_FAILURE. Implements mini-swe-agent max_consecutive_format_errors (default 3)."
+    },
+    "layer_2_outcome": {
+      "description": "Run result assigned only from an independent verifier verdict. Assigned by the evaluator, never by the core.",
+      "values": [
+        "SOLVED",
+        "FAILURE",
+        "INCONCLUSIVE"
+      ],
+      "mapping": {
+        "budget_unverifiable": "INCONCLUSIVE (fixed)",
+        "provider_error": "INCONCLUSIVE (fixed)",
+        "no_verdict": "INCONCLUSIVE",
+        "PASS": "SOLVED (for completed, max_steps_reached, budget_exceeded, error_limit_reached)",
+        "FAIL": "FAILURE (for completed, max_steps_reached, budget_exceeded, error_limit_reached)"
+      },
+      "denominator": "VERIFIED_SOLVED_TASK = count(outcome == SOLVED)"
+    }
+  },
+  "primary": "TOTAL_SYSTEM_TOKENS / VERIFIED_SOLVED_TASK",
+  "metric_v2": {
+    "name": "CORE_TOKENS_PARTIAL",
+    "definition": "sum of total_tokens over all calls of the run; null if any call has unknown usage",
+    "may_be_reported_as": "TOTAL_SYSTEM_TOKENS only when all 8 partitions are measured (none are null)",
+    "current_status": "CORE_TOKENS_PARTIAL: only partition execution is measured"
+  },
+  "partitions": [
+    "routing",
+    "task_shaping",
+    "planning",
+    "context_input",
+    "execution",
+    "escalation_handoff",
+    "verification",
+    "retry_replanning"
+  ],
+  "partition_rule": "every partition is present in AgentResult.partitions; a value is an integer (measured) or null with a reason in unmeasured. Never 0 or empty string as placeholder.",
+  "partition_status_v2": {
+    "execution": "measured as total_tokens (null if incomplete)",
+    "context_input": "null, reason: not separable from execution",
+    "routing": "null, reason: no routing layer",
+    "task_shaping": "null, reason: no shaping layer",
+    "planning": "null, reason: no planning layer",
+    "escalation_handoff": "null, reason: no escalation layer",
+    "verification": "null, reason: no verifier in core",
+    "retry_replanning": "null, reason: agent-level replanning absent; provider-level retries are reported in provider_attempts"
+  },
+  "other_metrics": [
+    "TOTAL_MONETARY_COST / VERIFIED_SOLVED_TASK",
+    "WALL_CLOCK_LATENCY",
+    "solve rate",
+    "escalation rate",
+    "retry rate",
+    "verifier cost",
+    "failure rate",
+    "inconclusive rate"
+  ],
+  "failure_cost_rule": "all consumed resources remain accounted for on failure or inconclusive. Enforced by an incremental ledger (call_started before the call, call_finished after, fsync per line). An interrupted call appears as in-flight and its consumption is declared unmeasured.",
+  "unmeasured_rule": "a null field must have an entry in AgentResult.unmeasured with the reason. Sentinels 0, 0.0 and \"\" are forbidden for unmeasured values (invariant I6).",
+  "usage_rule": "usage is the provider-reported usage. Missing usage is null, never 0. A call with any failed attempt has unknown usage for that attempt; total_tokens (and the other totals) are null when any call is incomplete (D5, I6). Budget decisions use the same lower bound.",
+  "lower_bound_rule": {
+    "tokens_lower_bound": "sum of total_tokens over calls whose usage was measured, including calls whose other attempts failed. It is a true lower bound of the tokens consumed. Null when no call returned usage (never 0). Reported even when total_tokens is null.",
+    "failed_attempt_count": "number of attempts that failed (provider errors inside retries). Measured count; 0 means none failed.",
+    "why": "a run recovered from a 429 keeps a usable lower bound instead of being discarded blindly; total_tokens stays null to avoid reporting an incomplete total as a measurement."
+  },
+  "cost_basis": {
+    "values": [
+      "priced_by_table",
+      "priced_zero_by_table",
+      "unknown"
+    ],
+    "priced_by_table": "cost > 0 from the litellm price table, estimate from provider usage",
+    "priced_zero_by_table": "cost exactly 0.0 from the price table (e.g. ollama/* entries). This is a table fact, not a measured zero cost and not free-of-charge evidence.",
+    "unknown": "no price entry; cost_usd is null",
+    "run_rule": "unknown if any call is unknown or has unknown usage; priced_zero_by_table if all calls are zero; otherwise priced_by_table, with zero_priced_calls reported separately"
+  },
+  "remote_required": {
+    "provider": "measured if litellm exposes it, else null",
+    "exact_model_requested": "measured: model passed to the call",
+    "exact_model_returned": "measured: raw.model returned by the API (model_returned), else null",
+    "request_parameters": "not yet recorded in run output (gap, reported in unmeasured as run configuration)",
+    "pricing_source": "measured: litellm version of the bundled price table",
+    "pricing_date": "not measured: litellm does not expose the price date",
+    "price_schedule_identity": "litellm version (pinned in requirements-dv-harness.txt)",
+    "input_tokens": "measured: usage.prompt_tokens",
+    "cached_input_tokens": "measured if exposed, else null",
+    "output_tokens": "measured: usage.completion_tokens",
+    "reasoning_tokens": "measured if exposed, else null; never added to total_tokens",
+    "api_usage_identifiers": "measured: response id (api_id) if exposed, else null"
+  },
+  "local_required": {
+    "hardware_identity": "not measured in this scope (null)",
+    "runtime_model_hash": "not measured in this scope (null)",
+    "quantization": "not measured in this scope (null)",
+    "warm_cold_state": "not measured in this scope (null)",
+    "load_time": "not measured in this scope (null)",
+    "wall_time": "measured: wall_clock_ms per call and total_wall_clock_ms per run",
+    "token_telemetry": "measured for remote providers via usage; local providers report what they expose",
+    "energy_evidence": "not measured in this scope (null)"
+  },
+  "free_local_rule": "FREE != ZERO COST. A priced_zero_by_table cost is reported with cost_basis and counted separately. Hardware, energy, setup, maintenance, verification and escalation remain separate and unmeasured. No hardware-to-token conversion.",
+  "cache_rule": "Superseded by token_buckets (v3). cached_input_tokens is the same field as cache_read_tokens. cache_write_tokens is measured when the provider exposes it. Cache availability and amortization are not measured.",
+  "price_drift_rule": "retain historical source and version (pricing_source). Future-price normalization is a separate analysis.",
+  "retry_rule": {
+    "policy": "exponential backoff base_delay_s * multiplier^(n-1), capped at max_delay_s, no jitter (reproducibility)",
+    "defaults": {
+      "max_attempts": 5,
+      "base_delay_s": 1.0,
+      "multiplier": 2.0,
+      "max_delay_s": 60.0
+    },
+    "abort_on": [
+      "UnsupportedParamsError",
+      "NotFoundError",
+      "PermissionDeniedError",
+      "ContextWindowExceededError",
+      "AuthenticationError"
+    ],
+    "accounting": "every attempt is recorded in CallRecord.attempts, including failed ones, with wall_clock_ms and error. provider_attempts (all attempts) and failed_attempt_count (failed ones) are reported at run level."
+  },
+  "audit_rule": "each tool call stores raw_output (complete, untruncated) and raw_sha256 in ToolEvent. The model receives the truncated observation. The ledger stores raw_output.",
+  "environment_rule": "the tool subprocess environment is an allowlist: PATH, HOME, LANG, LC_ALL, TMPDIR, TERM, USER, plus non-interactive variables (PAGER, MANPAGER, GIT_PAGER, LESS, PIP_PROGRESS_BAR, TQDM_DISABLE). No API key of the host reaches the subprocess.",
+  "no_composite_score": true,
+  "frozen_references": {
+    "v1_file": "experiments/p1/run-accounting-contract-v1.json",
+    "v1_unchanged": "verified by test against the sha256 recorded in tests/test_protocol.py",
+    "v2_file": "experiments/p1/run-accounting-contract-v2.json",
+    "v2_unchanged": "verified by test in tests/test_protocol.py (contract_id and state/partition/cost_basis conformance)"
+  },
+  "token_buckets": {
+    "description": "Four token buckets for telemetry of efficiency. Each is an integer or null (never 0 as a sentinel). They never change cost_usd: cost comes only from the pinned provider pricing (cost_basis unchanged).",
+    "uncached_input_tokens": "null in this scope: litellm 1.110.1 does not expose an uncached input count. It is never derived by subtraction, because that depends on provider semantics.",
+    "cache_write_tokens": "measured from usage.prompt_tokens_details.cache_write_tokens, else usage.prompt_tokens_details.cache_creation_tokens; null if neither is exposed.",
+    "cache_read_tokens": "measured from usage.prompt_tokens_details.cached_tokens; null if not exposed. Same value as cached_input_tokens (v2 name, kept).",
+    "output_tokens": "measured: usage.completion_tokens. Includes reasoning.",
+    "reasoning_tokens": "subfield of output_tokens, measured from usage.completion_tokens_details.reasoning_tokens if exposed. Never added to any total (no double counting).",
+    "totals": "AgentResult totals of each bucket are the sum over calls, null if any call has unknown usage or the bucket is not exposed in some call (same rule as D5)."
+  },
+  "tool_failure_classification": {
+    "description": "Each tool event has a failure_kind. It is observation metadata, not a run state.",
+    "OK": "the tool executed and returned ok=True.",
+    "DOMAIN_FAILURE": "expected error from the work content or environment, returned by the executor with ok=False (for example run_bash exit_code != 0, a timeout, a missing file, an ambiguous edit). Shown to the model as an observation. Does NOT count toward error_limit. A turn with only DOMAIN_FAILURE resets consecutive_protocol_errors.",
+    "PROTOCOL_ERROR": "protocol or harness contract violation: text reply without tool call, unknown tool name, invalid JSON arguments, malformed arguments, malformed submit, internal exception of the executor. Counts toward error_limit.",
+    "counters": "AgentResult.protocol_errors, domain_failures and cmd_timeouts (timed_out run_bash calls) are reported separately, so agent failures can be distinguished from harness and infrastructure failures."
+  },
+  "false_finish": {
+    "definition": "is_false_finish(status, outcome): status == completed AND outcome == FAILURE. The executor declared success and the independent verifier rejected it.",
+    "false_finish_rate": "count(false_finish) / count(runs with status completed and outcome in {SOLVED, FAILURE}). Runs completed with outcome None or INCONCLUSIVE are excluded from the denominator and reported separately. Null (not 0) when the denominator is 0.",
+    "helper": "protocol.is_false_finish and protocol.false_finish_rate"
+  },
+  "infra_telemetry": {
+    "description": "Container execution metadata. It separates an agent failure from an infrastructure failure.",
+    "environment": [
+      "cpus",
+      "memory",
+      "pids_limit",
+      "timeout_s",
+      "network",
+      "image"
+    ],
+    "infra_flags": {
+      "oom_killed": "docker inspect State.OOMKilled of the container; null if the daemon could not be queried",
+      "timed_out": "the container exceeded timeout_s and was killed by the wrapper"
+    },
+    "rule": "an OOM kill or a container timeout is an infrastructure event and must not be recorded as the executor's behavior alone."
+  }
+}

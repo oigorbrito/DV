@@ -170,7 +170,14 @@ class LLMResponse:
     provider: str | None = None
     api_id: str | None = None
     wall_clock_ms: float | None = None
+    # Baldes de tokens (contrato v3). None = o provedor/litellm não expõe. Nunca derivados por subtração.
+    # uncached_input_tokens: o litellm 1.110.1 não expõe este campo, então fica None.
+    uncached_input_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    # Alias de cache_read_tokens (nome da v2, mantido). Subcampo, não somar ao total.
     cached_input_tokens: int | None = None
+    # Subcampo de completion_tokens (não somar ao total).
     reasoning_tokens: int | None = None
     pricing_source: str | None = None
     attempts: tuple[AttemptRecord, ...] = field(default_factory=tuple)
@@ -272,6 +279,9 @@ class LLMClient:
             None if prompt_tokens is None or completion_tokens is None else prompt_tokens + completion_tokens
         )
         cost = self._cost_or_none(raw, effective_model)
+        cache_write = _detail(usage, "prompt_tokens_details", "cache_write_tokens")
+        if cache_write is None:
+            cache_write = _detail(usage, "prompt_tokens_details", "cache_creation_tokens")
 
         return LLMResponse(
             content=getattr(message, "content", None),
@@ -286,6 +296,9 @@ class LLMClient:
             provider=_provider_of(raw),
             api_id=_str_or_none(getattr(raw, "id", None)),
             wall_clock_ms=wall_clock_ms,
+            uncached_input_tokens=None,
+            cache_write_tokens=cache_write,
+            cache_read_tokens=_detail(usage, "prompt_tokens_details", "cached_tokens"),
             cached_input_tokens=_detail(usage, "prompt_tokens_details", "cached_tokens"),
             reasoning_tokens=_detail(usage, "completion_tokens_details", "reasoning_tokens"),
             pricing_source=PRICING_SOURCE if cost is not None else None,

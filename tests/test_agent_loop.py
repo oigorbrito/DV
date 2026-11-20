@@ -494,3 +494,102 @@ def test_lower_bound_equals_total_when_complete(tmp_path):
     assert result.total_tokens == 7
     assert result.tokens_lower_bound == 7
     assert result.failed_attempt_count == 0
+
+
+# --- ajuste 1: PROTOCOL_ERROR conta; DOMAIN_FAILURE é observação ----------------------
+
+FAIL_CMD = "exit 1"  # exit_code != 0 em cmd.exe e em sh: falha de domínio, não de protocolo
+POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="requires POSIX shell")
+
+
+def _fail_call(call_id: str):
+    return call(call_id, "run_bash", {"command": FAIL_CMD})
+
+
+def _bad_call(call_id: str):
+    return call(call_id, "no_such_tool", {})
+
+
+def test_four_consecutive_bash_failures_do_not_trigger_error_limit(tmp_path):
+    llm = ScriptedLLM([make_response(calls=[_fail_call(f"f{i}")]) for i in range(4)]
+                      + [make_response(calls=[submit("s", "done")])])
+    result = make_loop(tmp_path, llm, error_limit=3).run("t", "s", max_steps=20)
+    assert result.status == p.STATUS_COMPLETED
+    assert result.domain_failures == 4
+    assert result.protocol_errors == 0
+    bash = [e for e in result.tool_events if e.name == "run_bash"]
+    assert len(bash) == 4 and all(e.failure_kind == p.FAILURE_DOMAIN and not e.ok for e in bash)
+    assert not any(e.format_error for e in bash)
+
+
+def test_three_consecutive_protocol_errors_trigger_error_limit(tmp_path):
+    llm = ScriptedLLM([make_response(calls=[_bad_call(f"b{i}")]) for i in range(3)])
+    result = make_loop(tmp_path, llm, error_limit=3).run("t", "s", max_steps=20)
+    assert result.status == p.STATUS_ERROR_LIMIT
+    assert result.protocol_errors == 3
+    assert all(e.failure_kind == p.FAILURE_PROTOCOL for e in result.tool_events)
+
+
+def test_domain_turn_resets_the_protocol_counter(tmp_path):
+    llm = ScriptedLLM([
+        make_response(calls=[_bad_call("b1")]),   # protocolo 1
+        make_response(calls=[_bad_call("b2")]),   # protocolo 2
+        make_response(calls=[_fail_call("f1")]),  # domínio: zera
+        make_response(calls=[_bad_call("b3")]),   # protocolo 1
+        make_response(calls=[_bad_call("b4")]),   # protocolo 2 (limite 3 não atingido)
+        make_response(calls=[submit("s", "done")]),
+    ])
+    result = make_loop(tmp_path, llm, error_limit=3).run("t", "s", max_steps=20)
+    assert result.status == p.STATUS_COMPLETED
+
+
+def test_mixed_turn_with_protocol_error_counts_once(tmp_path):
+    # Um turno com falha de domínio E erro de protocolo conta como um turno de protocolo.
+    llm = ScriptedLLM([make_response(calls=[_fail_call("f"), _bad_call("b")]) for _ in range(3)])
+    result = make_loop(tmp_path, llm, error_limit=3).run("t", "s", max_steps=20)
+    assert result.status == p.STATUS_ERROR_LIMIT
+    assert result.steps == 3
+    assert result.protocol_errors == 3 and result.domain_failures == 3
+
+
+def test_text_only_turn_is_protocol_and_is_counted(tmp_path):
+    llm = ScriptedLLM([make_response(content="thinking"), make_response(content="thinking")])
+    result = make_loop(tmp_path, llm, error_limit=2).run("t", "s", max_steps=20)
+    assert result.status == p.STATUS_ERROR_LIMIT
+    assert result.protocol_errors == 2
+
+
+@POSIX_ONLY
+def test_command_timeout_is_domain_failure_and_counted_as_cmd_timeout(tmp_path):
+    slow = call("t1", "run_bash", {"command": f'"{sys.executable}" -c "import time; time.sleep(5)"', "timeout": 0.5})
+    llm = ScriptedLLM([make_response(calls=[slow]), make_response(calls=[submit("s", "done")])])
+    result = make_loop(tmp_path, llm, error_limit=1).run("t", "s", max_steps=10)
+    assert result.status == p.STATUS_COMPLETED
+    assert result.cmd_timeouts == 1
+    assert result.tool_events[0].timed_out and result.tool_events[0].failure_kind == p.FAILURE_DOMAIN
+
+
+def test_token_buckets_are_summed_only_when_every_call_measures_them(tmp_path):
+    import dataclasses
+    measured = dataclasses.replace(make_response(calls=[call("c1", "run_bash", {"command": FAIL_CMD})]),
+                                   cache_write_tokens=3, cache_read_tokens=2, cached_input_tokens=2)
+    other = dataclasses.replace(make_response(calls=[submit("s", "done")]),
+                                cache_write_tokens=4, cache_read_tokens=1, cached_input_tokens=1)
+    other = dataclasses.replace(other, reasoning_tokens=2)  # subcampo: não soma em output_tokens
+    result = make_loop(tmp_path, ScriptedLLM([measured, other])).run("t", "s", max_steps=10)
+    assert result.total_cache_write_tokens == 7
+    assert result.total_cached_input_tokens == 3
+    assert result.total_output_tokens == 10            # completion 5 + 5
+    assert result.total_uncached_input_tokens is None  # não exposto
+    assert "not exposed" in result.unmeasured["total_uncached_input_tokens"]
+    assert "total_cache_write_tokens" not in result.unmeasured
+
+
+def test_token_bucket_is_none_when_one_call_does_not_expose_it(tmp_path):
+    import dataclasses
+    with_write = dataclasses.replace(make_response(calls=[call("c1", "run_bash", {"command": FAIL_CMD})]),
+                                     cache_write_tokens=3)
+    without = make_response(calls=[submit("s", "done")])  # cache_write_tokens=None
+    result = make_loop(tmp_path, ScriptedLLM([with_write, without])).run("t", "s", max_steps=10)
+    assert result.total_cache_write_tokens is None
+    assert "not exposed" in result.unmeasured["total_cache_write_tokens"]

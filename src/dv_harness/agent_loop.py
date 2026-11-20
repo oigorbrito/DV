@@ -14,7 +14,8 @@ Ordem por turno (protocolo v2, decisão D1):
 4. As ferramentas do turno executam, na ordem. Depois, se houve ``submit`` válido, o
    run termina com ``completed`` e ``final_answer`` = resposta submetida.
 5. Turno sem ``tool_calls`` e sem submissão é **erro de formato**, não conclusão.
-6. ``error_limit`` erros de formato/ferramenta consecutivos -> ``error_limit_reached``.
+6. ``error_limit`` turnos consecutivos com ``PROTOCOL_ERROR`` -> ``error_limit_reached``.
+   ``DOMAIN_FAILURE`` (ex.: ``exit_code != 0``) é observação de depuração: não conta, e zera o contador.
 7. ``max_steps`` chamadas lógicas bem-sucedidas -> ``max_steps_reached``.
 
 Estados (camada 1, ``protocol.EXECUTOR_STATUSES``). O ``outcome`` (SOLVED, FAILURE,
@@ -25,10 +26,11 @@ Limites: ``max_steps`` conta chamadas lógicas bem-sucedidas. ``max_tokens`` e
 ``max_cost_usd`` são avaliados sobre as medições conhecidas. Como a última chamada
 já foi feita quando o limite é avaliado, ela pode ultrapassar o limite.
 
-Erros de ferramenta (nome desconhecido, JSON inválido, argumentos errados, exceção
-inesperada, caminho inválido) viram observação para o modelo, e contam para o teto de
-erros consecutivos. ``ToolResult(ok=False)`` esperado (ex.: ``old_text`` ambíguo) é
-resultado normal e não conta.
+Classificação (v3). ``PROTOCOL_ERROR``: texto sem ``tool_call``, nome de ferramenta
+desconhecido, JSON inválido, argumentos malformados, ``submit`` malformado, exceção interna.
+Conta para o teto de erros consecutivos. ``DOMAIN_FAILURE``: ``ToolResult(ok=False)``
+esperado, como ``exit_code != 0``, ``old_text`` ambíguo ou timeout. Vira observação e não
+conta. Ambos viram observação para o modelo.
 
 Auditoria (A6): cada ferramenta gera um ``ToolEvent`` com a saída bruta completa, seu
 SHA-256 e a versão truncada que foi para o modelo. Se ``ledger`` for fornecido, todos
@@ -129,6 +131,11 @@ class CallRecord:
     attempts: tuple[AttemptRecord, ...]
     attempt_usage_complete: bool
     error: str | None = None
+    # Baldes de tokens (v3). None = não exposto. output_tokens = completion_tokens (inclui reasoning).
+    uncached_input_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    output_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -146,6 +153,8 @@ class ToolEvent:
     raw_sha256: str
     truncated: bool
     wall_clock_ms: float | None  # None para submit, que não é executado por ferramenta
+    failure_kind: str = protocol.FAILURE_OK  # OK | DOMAIN_FAILURE | PROTOCOL_ERROR
+    timed_out: bool = False
 
 
 @dataclass
@@ -179,6 +188,13 @@ class AgentResult:
     outcome: str | None = None
     run_id: str | None = None
     unmeasured: dict[str, str] = field(default_factory=dict)
+    # Baldes de tokens e contadores de falha (v3).
+    total_uncached_input_tokens: int | None = None
+    total_cache_write_tokens: int | None = None
+    total_output_tokens: int | None = None
+    protocol_errors: int = 0
+    domain_failures: int = 0
+    cmd_timeouts: int = 0
 
 
 @dataclass
@@ -190,7 +206,9 @@ class _RunState:
     tool_events: list[ToolEvent] = field(default_factory=list)
     chars_saved: int = 0
     last_text: str | None = None
-    consecutive_errors: int = 0
+    consecutive_protocol_errors: int = 0
+    protocol_errors: int = 0
+    domain_failures: int = 0
     tool_ms: float = 0.0
 
 
@@ -207,7 +225,8 @@ class _Dispatch:
     raw_output: str
     ok: bool
     truncated: bool
-    format_error: bool
+    kind: str  # protocol.FAILURE_OK | FAILURE_DOMAIN | FAILURE_PROTOCOL
+    timed_out: bool = False
 
 
 def _check_budgets(calls: list[CallRecord], max_tokens: int | None, max_cost_usd: float | None) -> str | None:
@@ -312,28 +331,34 @@ class AgentLoop:
                 state.messages.append(_tool_message(call, f"not executed: run stopped with status {budget}"))
             return budget, state.last_text, None
 
-        submitted, turn_format_error = self._run_tools(state, index, response)
+        submitted, kinds = self._run_tools(state, index, response)
         if not response.tool_calls:
             state.messages.append({"role": "user", "content": NO_TOOL_CALL_MESSAGE})
-            turn_format_error = True
-        state.consecutive_errors = state.consecutive_errors + 1 if turn_format_error else 0
+            kinds.append(protocol.FAILURE_PROTOCOL)  # texto sem tool_call é erro de protocolo
+        state.protocol_errors += kinds.count(protocol.FAILURE_PROTOCOL)
+        state.domain_failures += kinds.count(protocol.FAILURE_DOMAIN)
+        # Só PROTOCOL_ERROR conta para o teto. Turno sem ele (inclui DOMAIN_FAILURE) zera o contador.
+        if protocol.FAILURE_PROTOCOL in kinds:
+            state.consecutive_protocol_errors += 1
+        else:
+            state.consecutive_protocol_errors = 0
 
         if submitted is not None:
             return protocol.STATUS_COMPLETED, submitted, None
-        if state.consecutive_errors >= self.error_limit:
+        if state.consecutive_protocol_errors >= self.error_limit:
             return protocol.STATUS_ERROR_LIMIT, state.last_text, None
         if _steps(state.calls) >= limits.max_steps:
             return protocol.STATUS_MAX_STEPS, state.last_text, None
         return None
 
-    def _run_tools(self, state: _RunState, index: int, response: LLMResponse) -> tuple[str | None, bool]:
+    def _run_tools(self, state: _RunState, index: int, response: LLMResponse) -> tuple[str | None, list[str]]:
         """Executa as ferramentas do turno: primeiro as normais, na ordem, depois ``submit``.
 
-        Devolve ``(resposta_submetida_ou_None, houve_erro_de_formato)``. Anexa as mensagens
+        Devolve ``(resposta_submetida_ou_None, classificações_dos_eventos)``. Anexa as mensagens
         ``tool`` na ordem original das chamadas, para o protocolo de tool calling.
         """
         observations: dict[str, str] = {}
-        turn_format_error = False
+        kinds: list[str] = []
         start = len(state.tool_events)
 
         for call in response.tool_calls:
@@ -343,34 +368,34 @@ class AgentLoop:
             state.tool_ms += elapsed_ms
             state.tool_events.append(event)
             observations[call.id] = dispatch.observation
-            turn_format_error = turn_format_error or dispatch.format_error
+            kinds.append(dispatch.kind)
 
         submitted: str | None = None
         for call in response.tool_calls:
             if call.name != SUBMIT_TOOL_NAME:
                 continue
-            observation, answer, format_error = self._handle_submit(call, already_accepted=submitted is not None)
+            observation, answer, kind = self._handle_submit(call, already_accepted=submitted is not None)
             if answer is not None:
                 submitted = answer
-            turn_format_error = turn_format_error or format_error
+            kinds.append(kind)
             observations[call.id] = observation
             state.tool_events.append(_submit_event(index, len(state.tool_events) + 1, call, observation,
-                                                   format_error=format_error, ok=answer is not None))
+                                                   kind=kind, ok=answer is not None))
 
         for event in state.tool_events[start:]:
             self._log("tool_finished", {"call_index": index, "tool_event": dataclasses.asdict(event)})
         for call in response.tool_calls:
             state.messages.append(_tool_message(call, observations[call.id]))
-        return submitted, turn_format_error
+        return submitted, kinds
 
-    def _handle_submit(self, call: ToolCall, *, already_accepted: bool) -> tuple[str, str | None, bool]:
-        """Valida um ``submit``. Devolve ``(observação, resposta_aceita_ou_None, erro_de_formato)``."""
+    def _handle_submit(self, call: ToolCall, *, already_accepted: bool) -> tuple[str, str | None, str]:
+        """Valida um ``submit``. Devolve ``(observação, resposta_aceita_ou_None, classificação)``."""
         if already_accepted:
-            return "not executed: a submission was already accepted this turn", None, False
+            return "not executed: a submission was already accepted this turn", None, protocol.FAILURE_OK
         answer, problem = _submit_answer(call)
         if problem is not None:
-            return problem, None, True
-        return "submitted", answer, False
+            return problem, None, protocol.FAILURE_PROTOCOL
+        return "submitted", answer, protocol.FAILURE_OK
 
     def _execute(self, call: ToolCall, call_index: int, event_no: int) -> tuple[_Dispatch, ToolEvent, float]:
         started = time.perf_counter()
@@ -382,12 +407,14 @@ class AgentLoop:
             call_id=call.id,
             name=call.name,
             ok=dispatch.ok,
-            format_error=dispatch.format_error,
+            format_error=dispatch.kind == protocol.FAILURE_PROTOCOL,
             observation=dispatch.observation,
             raw_output=dispatch.raw_output,
             raw_sha256=hashlib.sha256(dispatch.raw_output.encode("utf-8")).hexdigest(),
             truncated=dispatch.truncated,
             wall_clock_ms=elapsed,
+            failure_kind=dispatch.kind,
+            timed_out=dispatch.timed_out,
         )
         return dispatch, event, elapsed
 
@@ -395,27 +422,29 @@ class AgentLoop:
         """Executa uma ferramenta. Nunca levanta exceção."""
         if call.name not in TOOL_NAMES:
             text = f"error: unknown tool '{call.name}'. Available tools: {', '.join(TOOL_NAMES)}"
-            return _Dispatch(text, text, ok=False, truncated=False, format_error=True)
+            return _Dispatch(text, text, ok=False, truncated=False, kind=protocol.FAILURE_PROTOCOL)
         try:
             args = call.parsed_arguments
         except (ValueError, json.JSONDecodeError) as exc:
             text = f"error: invalid JSON arguments for {call.name}: {exc}"
-            return _Dispatch(text, text, ok=False, truncated=False, format_error=True)
+            return _Dispatch(text, text, ok=False, truncated=False, kind=protocol.FAILURE_PROTOCOL)
         try:
             method = getattr(self.executor, call.name)
             result: ToolResult = method(**args)
         except TypeError as exc:
             text = f"error: invalid arguments for {call.name}: {exc}"
-            return _Dispatch(text, text, ok=False, truncated=False, format_error=True)
+            return _Dispatch(text, text, ok=False, truncated=False, kind=protocol.FAILURE_PROTOCOL)
         except Exception as exc:  # noqa: BLE001 - erro de ferramenta vira observação, não derruba o loop
             text = f"error: {call.name} failed: {type(exc).__name__}: {exc}"
-            return _Dispatch(text, text, ok=False, truncated=False, format_error=True)
+            return _Dispatch(text, text, ok=False, truncated=False, kind=protocol.FAILURE_PROTOCOL)
+        # Resultado do executor: ok=True é OK; ok=False esperado (exit != 0, timeout, arquivo ausente) é DOMAIN.
         return _Dispatch(
             observation=_format_observation(result, raw=False),
             raw_output=_format_observation(result, raw=True),
             ok=result.ok,
             truncated=result.truncated,
-            format_error=False,
+            kind=protocol.FAILURE_OK if result.ok else protocol.FAILURE_DOMAIN,
+            timed_out=result.timed_out,
         )
 
     # --- registro, configuração e fechamento ------------------------------------
@@ -476,6 +505,12 @@ class AgentLoop:
             tokens_lower_bound=_lower_bound(calls),
             total_cached_input_tokens=_total(calls, lambda c: c.cached_input_tokens),
             total_reasoning_tokens=_total(calls, lambda c: c.reasoning_tokens),
+            total_uncached_input_tokens=_total(calls, lambda c: c.uncached_input_tokens),
+            total_cache_write_tokens=_total(calls, lambda c: c.cache_write_tokens),
+            total_output_tokens=_total(calls, lambda c: c.output_tokens),
+            protocol_errors=state.protocol_errors,
+            domain_failures=state.domain_failures,
+            cmd_timeouts=sum(1 for e in state.tool_events if e.timed_out),
             total_wall_clock_ms=total_ms,
             llm_wall_clock_ms=sum(c.wall_clock_ms for c in calls if c.wall_clock_ms is not None),
             tool_wall_clock_ms=state.tool_ms,
@@ -520,6 +555,14 @@ def _unmeasured_for(calls: list[CallRecord], total_tokens: int | None, run_id: s
     ):
         if value is None:
             unmeasured[key] = incomplete if calls else empty
+    for key, getter in (
+        ("total_uncached_input_tokens", lambda c: c.uncached_input_tokens),
+        ("total_cache_write_tokens", lambda c: c.cache_write_tokens),
+        ("total_output_tokens", lambda c: c.output_tokens),
+    ):
+        reason = _bucket_reason(calls, getter)
+        if reason is not None:
+            unmeasured[key] = reason
     if _lower_bound(calls) is None:
         unmeasured["tokens_lower_bound"] = "no call returned usage; no lower bound can be stated"
     failed = _failed_attempts(calls)
@@ -528,6 +571,17 @@ def _unmeasured_for(calls: list[CallRecord], total_tokens: int | None, run_id: s
             f"{failed} failed attempt(s) returned no usage; their tokens and cost are not measured"
         )
     return unmeasured
+
+
+def _bucket_reason(calls: list[CallRecord], getter) -> str | None:
+    """Motivo de um balde de tokens não medido, ou ``None`` se todas as chamadas o medem."""
+    if not calls:
+        return "no calls were made"
+    if any(not c.attempt_usage_complete for c in calls):
+        return "incomplete: at least one call has unknown usage (failed attempt or provider error)"
+    if any(getter(c) is None for c in calls):
+        return "not exposed by the provider/litellm in at least one call (null, not zero)"
+    return None
 
 
 def _lower_bound(calls: list[CallRecord]) -> int | None:
@@ -581,6 +635,10 @@ def _ok_call_record(index: int, response: LLMResponse) -> CallRecord:
         wall_clock_ms=response.wall_clock_ms,
         attempts=response.attempts,
         attempt_usage_complete=not any(a.outcome == "error" for a in response.attempts),
+        uncached_input_tokens=response.uncached_input_tokens,
+        cache_write_tokens=response.cache_write_tokens,
+        cache_read_tokens=response.cache_read_tokens,
+        output_tokens=response.completion_tokens,
     )
 
 
@@ -619,7 +677,7 @@ def _submit_answer(call: ToolCall) -> tuple[str | None, str | None]:
 
 
 def _submit_event(call_index: int, event_no: int, call: ToolCall, observation: str, *,
-                  format_error: bool, ok: bool) -> ToolEvent:
+                  kind: str, ok: bool) -> ToolEvent:
     """Evento de ``submit``, que não passa pelo executor. Sem tempo de execução de ferramenta."""
     return ToolEvent(
         index=event_no,
@@ -627,12 +685,13 @@ def _submit_event(call_index: int, event_no: int, call: ToolCall, observation: s
         call_id=call.id,
         name=call.name,
         ok=ok,
-        format_error=format_error,
+        format_error=kind == protocol.FAILURE_PROTOCOL,
         observation=observation,
         raw_output=observation,
         raw_sha256=hashlib.sha256(observation.encode("utf-8")).hexdigest(),
         truncated=False,
         wall_clock_ms=None,
+        failure_kind=kind,
     )
 
 

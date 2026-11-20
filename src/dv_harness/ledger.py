@@ -11,6 +11,7 @@ Eventos (campo ``event``):
 - ``call_finished``: a chamada terminou, com sucesso ou falha. Carrega o registro completo.
 - ``tool_finished``: uma ferramenta executou. Carrega a saída bruta completa e seu SHA-256.
 - ``run_finished``: estado final do executor.
+- ``infra_finished``: execução em container (``scripts/dv_container_run.py``), com quotas e flags de infraestrutura.
 
 Limitação: o ledger contém saída bruta de ferramentas. Se um arquivo lido contiver
 segredo, ele estará no ledger. Essa é a contrapartida da auditoria bruta exigida pelo

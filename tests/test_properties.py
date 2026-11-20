@@ -332,3 +332,90 @@ def test_I1b_lower_bound_and_failed_attempts_match_independent_recount(steps, fa
     # Quando há tentativa falha sem uso, o total não pode ser medido
     if result.failed_attempt_count or result.provider_calls_failed:
         assert result.total_tokens is None
+
+
+# --- ajuste 1 (propriedade): só PROTOCOL_ERROR consecutivo atinge error_limit ---------
+
+
+def _has_protocol_run(kinds: list[str], length: int) -> bool:
+    run = 0
+    for kind in kinds:
+        run = run + 1 if kind == "P" else 0
+        if run >= length:
+            return True
+    return False
+
+
+@PROP
+@given(
+    kinds=st.lists(st.sampled_from(["P", "D", "O"]), min_size=1, max_size=8),
+    limit=st.integers(min_value=1, max_value=4),
+)
+def test_only_consecutive_protocol_turns_reach_error_limit(kinds, limit):
+    # P = ferramenta inexistente (PROTOCOL_ERROR); D = read_file ausente (DOMAIN_FAILURE); O = ok.
+    with tempfile.TemporaryDirectory() as tmp:
+        ws = Path(tmp)
+        (ws / "a.txt").write_text("x\n", encoding="utf-8", newline="\n")
+        script = []
+        for i, kind in enumerate(kinds):
+            if kind == "P":
+                c = call(f"c{i}", "no_such_tool", {})
+            elif kind == "D":
+                c = call(f"c{i}", "read_file", {"path": "missing.txt"})
+            else:
+                c = call(f"c{i}", "read_file", {"path": "a.txt"})
+            script.append(make_response(calls=[c]))
+        script.append(make_response(calls=[submit("end", "done")]))
+        loop = AgentLoop(ScriptedLLM(script), ToolExecutor(ws), ContextManager(10), error_limit=limit)
+        result = loop.run("t", "s", max_steps=100)
+
+    if _has_protocol_run(kinds, limit):
+        assert result.status == p.STATUS_ERROR_LIMIT
+    else:
+        assert result.status == p.STATUS_COMPLETED
+        assert result.protocol_errors == kinds.count("P")
+        assert result.domain_failures == kinds.count("D")
+
+
+# --- ajuste 2 (propriedade): baldes de tokens são soma só se todos medem ---------------
+
+
+@PROP
+@given(
+    turns=st.lists(
+        st.tuples(
+            st.one_of(st.none(), st.integers(min_value=0, max_value=300)),  # cache_write
+            st.one_of(st.none(), st.integers(min_value=0, max_value=300)),  # cache_read
+            _usage,  # prompt
+            st.integers(min_value=0, max_value=300),  # completion
+        ),
+        min_size=1, max_size=4,
+    ),
+)
+def test_bucket_totals_are_sum_or_none_and_never_change_total_tokens(turns):
+    import dataclasses
+
+    script = []
+    for i, (write, read, prompt, completion) in enumerate(turns):
+        base = make_response(calls=[call(f"c{i}", "read_file", {"path": "missing.txt"})],
+                             prompt=prompt, completion=completion)
+        script.append(dataclasses.replace(base, cache_write_tokens=write, cache_read_tokens=read,
+                                          cached_input_tokens=read))
+    script.append(make_response(calls=[submit("end", "done")], prompt=1, completion=1))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        loop = AgentLoop(ScriptedLLM(script), ToolExecutor(Path(tmp)), ContextManager(10))
+        result = loop.run("t", "s", max_steps=100)
+
+    writes = [w for w, _, _, _ in turns] + [None]  # a última chamada (submit) não expõe write
+    reads = [r for _, r, _, _ in turns] + [None]
+    if any(w is None for w in writes):
+        assert result.total_cache_write_tokens is None
+    if any(r is None for r in reads):
+        assert result.total_cached_input_tokens is None
+    # total_tokens segue só prompt + completion; baldes não entram nele (sem dupla contagem).
+    if any(pr is None for _, _, pr, _ in turns):
+        expected_total = None  # prompt não medido em uma chamada: total não medido (D5)
+    else:
+        expected_total = sum(pr + co for _, _, pr, co in turns) + 2
+    assert result.total_tokens == expected_total

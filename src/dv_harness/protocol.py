@@ -14,7 +14,10 @@ Este módulo não chama LLM nem ferramentas. Só define vocabulário e a funçã
 
 from __future__ import annotations
 
-CONTRACT_ID = "p1-run-accounting-v2"
+from collections.abc import Iterable
+
+CONTRACT_ID = "p1-run-accounting-v3"  # contrato vigente (ver experiments/p1/run-accounting-contract-v3.json)
+CONTRACT_ID_V2 = "p1-run-accounting-v2"  # mantido sem alteração para evidência anterior
 METRIC_NAME = "CORE_TOKENS_PARTIAL"
 
 # Partições explícitas do contrato. Toda partição aparece em AgentResult.partitions,
@@ -55,6 +58,25 @@ OUTCOME_INCONCLUSIVE = "INCONCLUSIVE"
 VERDICT_PASS = "PASS"
 VERDICT_FAIL = "FAIL"
 
+# Classificação de cada evento de ferramenta (v3). Não são estados do run.
+FAILURE_OK = "OK"  # ferramenta executou com ok=True
+# Erro esperado do conteúdo ou do ambiente de trabalho (ex.: exit_code != 0 em run_bash, arquivo
+# ausente, edit ambíguo, timeout). É observação de depuração: não conta para error_limit.
+FAILURE_DOMAIN = "DOMAIN_FAILURE"
+# Violação de protocolo ou de contrato do harness (texto sem tool_call, JSON inválido, argumentos
+# malformados, ferramenta inexistente, submit malformado, exceção interna). Conta para error_limit.
+FAILURE_PROTOCOL = "PROTOCOL_ERROR"
+FAILURE_KINDS: frozenset[str] = frozenset({FAILURE_OK, FAILURE_DOMAIN, FAILURE_PROTOCOL})
+
+# Quatro baldes de tokens de entrada/saída (v3). Cada um é None quando o provedor não expõe.
+# cached/cache_read e reasoning são subcampos: nunca somados ao total (sem dupla contagem).
+TOKEN_BUCKETS: tuple[str, ...] = (
+    "uncached_input_tokens",
+    "cache_write_tokens",
+    "cache_read_tokens",
+    "output_tokens",
+)
+
 # cost_basis: distingue custo real de preço zero da tabela e de custo desconhecido.
 COST_BASIS_PRICED = "priced_by_table"
 COST_BASIS_ZERO = "priced_zero_by_table"
@@ -82,6 +104,23 @@ def run_cost_basis(call_bases: list[str]) -> str:
     if all(b == COST_BASIS_ZERO for b in call_bases):
         return COST_BASIS_ZERO
     return COST_BASIS_PRICED
+
+
+def is_false_finish(status: str, outcome: str | None) -> bool:
+    """Término falso: o executor declarou ``completed`` e o verificador deu ``FAILURE``."""
+    return status == STATUS_COMPLETED and outcome == OUTCOME_FAILURE
+
+
+def false_finish_rate(runs: Iterable[tuple[str, str | None]]) -> float | None:
+    """Fração de términos falsos entre runs ``completed`` com outcome verificado (SOLVED ou FAILURE).
+
+    Runs ``completed`` sem veredito (``None`` ou ``INCONCLUSIVE``) ficam fora do denominador e
+    devem ser reportados à parte. Sem denominador, o resultado é ``None``, nunca 0.
+    """
+    verified = [o for s, o in runs if s == STATUS_COMPLETED and o in (OUTCOME_SOLVED, OUTCOME_FAILURE)]
+    if not verified:
+        return None
+    return sum(1 for o in verified if o == OUTCOME_FAILURE) / len(verified)
 
 
 def outcome_for(status: str, verdict: str | None) -> str:

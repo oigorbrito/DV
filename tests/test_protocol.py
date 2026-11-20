@@ -18,15 +18,22 @@ V1_PATH = ROOT / "experiments" / "p1" / "run-accounting-contract-v1.json"
 V2_PATH = ROOT / "experiments" / "p1" / "run-accounting-contract-v2.json"
 # Hash do v1 no commit e826f8e. Qualquer mudança no v1 falha este teste.
 V1_SHA256 = "3f1366846c095f3630e2f4bbaf0eb2555d8281fce8f1d9882f2952130813d86b"
+V3_PATH = ROOT / "experiments" / "p1" / "run-accounting-contract-v3.json"
+# Hash do v2 no commit 8cc338d (antes do v3). Qualquer mudança no v2 falha este teste.
+V2_SHA256 = "922f9a544468d69a60649fd59ff785e46b60d348815a9ce4e13419002d5e5d36"
 
 
 def test_v1_contract_is_unchanged():
     assert hashlib.sha256(V1_PATH.read_bytes()).hexdigest() == V1_SHA256
 
 
+def test_v2_contract_is_unchanged():
+    assert hashlib.sha256(V2_PATH.read_bytes()).hexdigest() == V2_SHA256
+
+
 def test_v2_contract_parses_and_names_v1_as_superseded():
     doc = json.loads(V2_PATH.read_text(encoding="utf-8"))
-    assert doc["contract_id"] == p.CONTRACT_ID
+    assert doc["contract_id"] == p.CONTRACT_ID_V2
     assert doc["supersedes"] == "p1-run-accounting-v1"
 
 
@@ -98,3 +105,68 @@ def test_run_cost_basis(bases, expected):
 def test_unmeasured_reasons_are_non_empty_strings():
     for key, reason in p.UNMEASURED_REASONS.items():
         assert isinstance(reason, str) and reason.strip(), key
+
+
+# --- contrato v3: baldes de tokens, classificação de falhas, false_finish --------
+
+
+def _v3():
+    return json.loads(V3_PATH.read_text(encoding="utf-8"))
+
+
+def test_v3_contract_names_v2_as_superseded_and_matches_code_id():
+    doc = _v3()
+    assert doc["contract_id"] == p.CONTRACT_ID == "p1-run-accounting-v3"
+    assert doc["supersedes"] == p.CONTRACT_ID_V2
+
+
+def test_v3_states_partitions_and_cost_basis_match_code():
+    doc = _v3()
+    assert set(doc["state_model"]["layer_1_executor_status"]["states"]) == set(p.EXECUTOR_STATUSES)
+    assert tuple(doc["partitions"]) == p.PARTITIONS
+    assert tuple(doc["cost_basis"]["values"]) == (p.COST_BASIS_PRICED, p.COST_BASIS_ZERO, p.COST_BASIS_UNKNOWN)
+
+
+def test_v3_declares_the_four_token_buckets_and_nothing_else():
+    buckets = _v3()["token_buckets"]
+    assert tuple(k for k in buckets if k in p.TOKEN_BUCKETS) == p.TOKEN_BUCKETS
+    assert "uncached_input_tokens" in buckets and "reasoning_tokens" in buckets
+
+
+def test_v3_declares_failure_classes_and_false_finish():
+    doc = _v3()
+    assert set(doc["tool_failure_classification"]) >= {"OK", "DOMAIN_FAILURE", "PROTOCOL_ERROR"}
+    assert "false_finish_rate" in doc["false_finish"]
+    assert set(doc["infra_telemetry"]["environment"]) == {"cpus", "memory", "pids_limit", "timeout_s", "network", "image"}
+
+
+def test_failure_kinds_are_the_three_documented_classes():
+    assert {"OK", "DOMAIN_FAILURE", "PROTOCOL_ERROR"} == p.FAILURE_KINDS
+
+
+@pytest.mark.parametrize("status,outcome,expected", [
+    ("completed", "FAILURE", True),
+    ("completed", "SOLVED", False),
+    ("completed", "INCONCLUSIVE", False),
+    ("completed", None, False),
+    ("max_steps_reached", "FAILURE", False),
+    ("error_limit_reached", "FAILURE", False),
+])
+def test_is_false_finish(status, outcome, expected):
+    assert p.is_false_finish(status, outcome) is expected
+
+
+def test_false_finish_rate_uses_only_verified_completed_runs():
+    runs = [
+        ("completed", "FAILURE"),       # false finish
+        ("completed", "SOLVED"),
+        ("completed", "INCONCLUSIVE"),  # sem veredito: fora do denominador
+        ("completed", None),            # sem veredito: fora do denominador
+        ("max_steps_reached", "FAILURE"),  # não é término declarado: fora
+    ]
+    assert p.false_finish_rate(runs) == pytest.approx(0.5)
+
+
+def test_false_finish_rate_is_none_not_zero_without_denominator():
+    assert p.false_finish_rate([]) is None
+    assert p.false_finish_rate([("max_steps_reached", "FAILURE"), ("completed", None)]) is None
