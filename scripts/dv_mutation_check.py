@@ -327,6 +327,23 @@ MUTANTS: tuple[Mutant, ...] = (
            "                report = harness_error_report(task, run_dir, exc, config, cap)",
            "                raise",
            "harness error propagates and kills the batch instead of being recorded per task", T_BATCH),
+    # --- orçamento pelo limite inferior, pass_rate, usage_details e patch (auditoria 2026-11) ---
+    Mutant("M67", f"{SRC}/agent_loop.py",
+           "    unknown_cost = any(c.cost_usd is None for c in calls)",
+           "    unknown_cost = any(c.cost_usd is None or not c.attempt_usage_complete for c in calls)",
+           "recovered retry makes the budget unverifiable and skips the turn's tools again", T_LOOP),
+    Mutant("M68", f"{SRC}/batch.py",
+           "        \"pass_rate\": solved_n / (solved_n + failure_n) if solved_n + failure_n else None,",
+           "        \"pass_rate\": solved_n / n if n else None,",
+           "pass_rate counts INCONCLUSIVE runs in the denominator again", T_BATCH),
+    Mutant("M69", f"{SRC}/llm_client.py",
+           "            usage_details=_usage_details(usage),",
+           "            usage_details=None,",
+           "usage subfields (cache/reasoning details) not recorded for audit", T_LLM),
+    Mutant("M70", f"{SRC}/batch.py",
+           "        if before == after:",
+           "        if False:",
+           "patch stats count every file as changed (regression of the write_text CRLF bug)", T_BATCH),
 )
 
 

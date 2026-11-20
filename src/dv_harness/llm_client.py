@@ -190,6 +190,9 @@ class LLMResponse:
     output_tokens: int | None = None
     reasoning_tokens: int | None = None
     pricing_source: str | None = None
+    # Snapshot aditivo dos subcampos de usage (prompt/completion_tokens_details, cache_creation_token_details).
+    # Telemetria de auditoria: não é campo do contrato v3 e nunca alimenta os baldes.
+    usage_details: dict[str, Any] | None = None
     attempts: tuple[AttemptRecord, ...] = field(default_factory=tuple)
 
 
@@ -330,6 +333,7 @@ class LLMClient:
             cached_input_tokens=_detail(usage, "prompt_tokens_details", "cached_tokens"),
             reasoning_tokens=_detail(usage, "completion_tokens_details", "reasoning_tokens"),
             pricing_source=PRICING_SOURCE if cost is not None else None,
+            usage_details=_usage_details(usage),
             attempts=tuple(attempts),
         )
 
@@ -356,6 +360,45 @@ def _detail(usage: Any, container: str, field_name: str) -> int | None:
     details = getattr(usage, container, None)
     value = getattr(details, field_name, None) if details is not None else None
     return _int_or_none(value)
+
+
+_USAGE_DETAIL_FIELDS = ("prompt_tokens_details", "completion_tokens_details", "cache_creation_token_details")
+
+
+def _usage_details(usage: Any) -> dict[str, Any] | None:
+    """Subcampos de usage que o provedor/litellm expõe, só os não nulos, em dict serializável.
+
+    ``cache_creation_token_details`` vem de ``prompt_tokens_details`` e é gravado no nível de cima (não duplicado).
+    Campo ausente é omitido, nunca 0. ``None`` quando não há usage nem subcampos.
+    """
+    if usage is None:
+        return None
+    out: dict[str, Any] = {}
+    for name in _USAGE_DETAIL_FIELDS:
+        if name == "cache_creation_token_details":
+            value = getattr(getattr(usage, "prompt_tokens_details", None), name, None)
+        else:
+            value = getattr(usage, name, None)
+        plain = _to_plain(value)
+        if name == "prompt_tokens_details" and isinstance(plain, dict):
+            plain.pop("cache_creation_token_details", None)  # gravado no nível de cima
+        if plain not in (None, {}, []):
+            out[name] = json.loads(json.dumps(plain, default=str))  # garante JSON no ledger
+    return out or None
+
+
+def _to_plain(value: Any) -> Any:
+    """Conversão recursiva para tipos JSON. Campos ``None`` são descartados; objetos viram dict ou texto."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, Mapping):
+        return {str(k): _to_plain(v) for k, v in value.items() if v is not None}
+    if isinstance(value, (list, tuple)):
+        return [_to_plain(v) for v in value]
+    if hasattr(value, "model_dump"):
+        return _to_plain(value.model_dump(exclude_none=True))
+    public = {k: v for k, v in vars(value).items() if not k.startswith("_")} if hasattr(value, "__dict__") else {}
+    return _to_plain(public) if public else str(value)
 
 
 def _provider_of(raw: Any) -> str | None:

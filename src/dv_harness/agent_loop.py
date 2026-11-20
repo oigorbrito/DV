@@ -136,6 +136,8 @@ class CallRecord:
     cache_write_tokens: int | None = None
     cache_read_tokens: int | None = None
     output_tokens: int | None = None
+    # Snapshot aditivo dos subcampos de usage do litellm (telemetria; não é campo do contrato v3).
+    usage_details: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -239,8 +241,11 @@ def _check_budgets(calls: list[CallRecord], max_tokens: int | None, max_cost_usd
     """
     known_tokens = [c.total_tokens for c in calls if c.total_tokens is not None]
     known_costs = [c.cost_usd for c in calls if c.cost_usd is not None]
-    unknown_tokens = any(c.total_tokens is None or not c.attempt_usage_complete for c in calls)
-    unknown_cost = any(c.cost_usd is None or not c.attempt_usage_complete for c in calls)
+    # Decisão pelo limite inferior (contrato v3, usage_rule): uma chamada com tentativa recuperada tem
+    # custo conhecido (a tentativa bem-sucedida foi medida). Só preço ou uso desconhecidos tornam o orçamento
+    # não verificável. attempt_usage_complete continua afetando os TOTAIS (unmeasured), não a parada.
+    unknown_tokens = any(c.total_tokens is None for c in calls)
+    unknown_cost = any(c.cost_usd is None for c in calls)
 
     if max_tokens is not None and sum(known_tokens) >= max_tokens:
         return protocol.STATUS_BUDGET
@@ -643,6 +648,7 @@ def _ok_call_record(index: int, response: LLMResponse) -> CallRecord:
         cache_write_tokens=response.cache_write_tokens,
         cache_read_tokens=response.cache_read_tokens,
         output_tokens=response.completion_tokens,
+        usage_details=response.usage_details,
     )
 
 

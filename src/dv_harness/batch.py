@@ -31,8 +31,10 @@ então ``treatment_eligible`` é sempre ``False`` aqui.
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json
+import math
 import os
 import re
 import subprocess
@@ -430,9 +432,9 @@ def run_one(task: BatchTask, run_dir: Path, llm: Any, config: BatchConfig, *,
     for name, content in task.files.items():
         target = workspace / name
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+        target.write_bytes(content.encode("utf-8"))  # bytes exatos: write_text converteria \n em \r\n no Windows
     oracle_path = oracle_dir / ORACLE_FILE
-    oracle_path.write_text(task.oracle, encoding="utf-8")
+    oracle_path.write_bytes(task.oracle.encode("utf-8"))
 
     with RunLedger(run_dir / "ledger.jsonl") as ledger:
         loop = AgentLoop(llm, ToolExecutor(workspace), ContextManager(keep_recent_observations=10), ledger=ledger)
@@ -440,6 +442,7 @@ def run_one(task: BatchTask, run_dir: Path, llm: Any, config: BatchConfig, *,
                           max_cost_usd=cap, run_id=task.task_id)
 
     verdict = verify(oracle_path, workspace)
+    patch = _patch_stats(task.files, workspace)  # pós-execução: arquivos iniciais vs. finais do workspace
     report: dict[str, Any] = {
         "task_id": task.task_id,
         "family": task.family,
@@ -485,9 +488,10 @@ def run_one(task: BatchTask, run_dir: Path, llm: Any, config: BatchConfig, *,
         "tool_events": [
             {"index": e.index, "call_index": e.call_index, "name": e.name, "ok": e.ok, "format_error": e.format_error,
              "raw_sha256": e.raw_sha256, "raw_len": len(e.raw_output), "truncated": e.truncated,
-             "wall_clock_ms": e.wall_clock_ms}
+             "wall_clock_ms": e.wall_clock_ms, "failure_kind": e.failure_kind, "timed_out": e.timed_out}
             for e in result.tool_events
         ],
+        "patch_stats": patch,
         "unmeasured": dict(result.unmeasured),
     }
     (run_dir / "result.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -530,6 +534,8 @@ def harness_error_report(task: BatchTask, run_dir: Path, exc: BaseException, con
     report["unmeasured"] = {k: reason for k in report
                               if k.startswith("total_") or k in ("failed_attempt_count", "tokens_lower_bound")}
     report["unmeasured"]["verifier_verdict"] = "verification not reached"
+    report["patch_stats"] = None
+    report["unmeasured"]["patch_stats"] = reason
     if in_flight:
         report["unmeasured"]["in_flight_calls"] = f"calls {in_flight} started and not finished: consumption unknown"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -554,6 +560,7 @@ def _brief(report: dict[str, Any], leak_clean: bool) -> dict[str, Any]:
         "cost_basis": report["cost_basis"],
         "task_cost_cap_usd": report["task_cost_cap_usd"],
         "wall_clock_ms": report["total_wall_clock_ms"],
+        "patch_stats": report.get("patch_stats"),
         "failed_attempt_count": report["failed_attempt_count"],
         "error_types": report["error_types"],
         "leak_clean": leak_clean,
@@ -567,7 +574,8 @@ NULLABLE_SUMMARY_FIELDS = (
     "total_tokens", "tokens_lower_bound", "total_cost_usd", "total_wall_clock_ms", "total_uncached_input_tokens",
     "total_cache_read_tokens", "total_cache_write_tokens", "total_reasoning_tokens", "total_output_tokens",
     "failed_attempt_count_total", "pass_rate", "solved_rate", "false_finish_rate",
-    "core_tokens_partial_per_solved", "git_head",
+    "core_tokens_partial_per_solved", "git_head", "tokens_lower_bound_per_solved",
+    "cost_lower_bound_usd_per_solved", "spent_lower_bound_usd", "cost_coverage_rate",
 )
 
 
@@ -579,17 +587,23 @@ def _sum_or_none(runs: list[dict[str, Any]], key: str, reason: str, unmeasured: 
     return sum(values)
 
 
-def _rates(runs: list[dict[str, Any]], verdicts: Counter, outcomes: Counter,
-           unmeasured: dict[str, str]) -> dict[str, Any]:
+def _rates(runs: list[dict[str, Any]], outcomes: Counter, unmeasured: dict[str, str]) -> dict[str, Any]:
     n = len(runs)
-    pass_n, fail_n = verdicts.get(protocol.VERDICT_PASS, 0), verdicts.get(protocol.VERDICT_FAIL, 0)
+    solved_n = outcomes.get(protocol.OUTCOME_SOLVED, 0)
+    failure_n = outcomes.get(protocol.OUTCOME_FAILURE, 0)
     rates: dict[str, Any] = {
-        "pass_rate": pass_n / (pass_n + fail_n) if pass_n + fail_n else None,
-        "solved_rate": outcomes.get(protocol.OUTCOME_SOLVED, 0) / n if n else None,
+        # INCONCLUSIVE (provider_error, budget_unverifiable, erro de harness) não tem resultado verificado:
+        # fica fora do denominador, e o contador é reportado à parte.
+        "pass_rate": solved_n / (solved_n + failure_n) if solved_n + failure_n else None,
+        "solved_rate": solved_n / n if n else None,
         "false_finish_rate": protocol.false_finish_rate([(r["status"], r["outcome"]) for r in runs]),
+        "inconclusive_count": outcomes.get(protocol.OUTCOME_INCONCLUSIVE, 0),
+        "verdict_available_count": sum(1 for r in runs if r["verifier_verdict"] is not None),
+        "pass_rate_definition": "SOLVED / (SOLVED + FAILURE); INCONCLUSIVE runs excluded",
+        "solved_rate_definition": "SOLVED / total_tasks; INCONCLUSIVE counted as unresolved",
     }
     reasons = {
-        "pass_rate": "no run has a verifier verdict (PASS or FAIL)",
+        "pass_rate": "no SOLVED or FAILURE outcome (no verified run)",
         "solved_rate": "no runs executed",
         "false_finish_rate": "no completed run with a SOLVED or FAILURE outcome",
     }
@@ -636,6 +650,103 @@ def screening_registry_status(candidate_id: str | None, registry_path: Path = RE
     return {"candidate_id": candidate_id, "registry_status": "NOT_IN_REGISTRY"}
 
 
+def _percentile(values: list[float], p: float) -> float | None:
+    """Percentil por posto (nearest-rank). Sem valores: ``None``, nunca 0 como sentinela."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    return ordered[max(1, math.ceil(p * len(ordered))) - 1]
+
+
+def _nested(parent: str, values: dict[str, Any], reasons: dict[str, str],
+            unmeasured: dict[str, str]) -> dict[str, Any]:
+    """Todo ``None`` de um sub-bloco do resumo precisa de motivo em ``unmeasured["<bloco>.<campo>"]``."""
+    for key, value in values.items():
+        if value is None:
+            unmeasured[f"{parent}.{key}"] = reasons[key]
+    return values
+
+
+def _wall_stats(runs: list[dict[str, Any]], unmeasured: dict[str, str]) -> dict[str, Any]:
+    run_vals = [r["total_wall_clock_ms"] for r in runs if r["total_wall_clock_ms"] is not None]
+    call_vals = [c["wall_clock_ms"] for r in runs for c in r["calls"] if c.get("wall_clock_ms") is not None]
+    stats = {"run_p50": _percentile(run_vals, 0.5), "run_p95": _percentile(run_vals, 0.95),
+             "call_p50": _percentile(call_vals, 0.5), "call_p95": _percentile(call_vals, 0.95)}
+    reasons = {k: "no measured wall-clock values" for k in stats}
+    return _nested("wall_clock_ms_stats", stats, reasons, unmeasured)
+
+
+def _tool_stats(runs: list[dict[str, Any]], unmeasured: dict[str, str]) -> dict[str, Any]:
+    events = [e for r in runs for e in r["tool_events"]]
+    kinds = Counter(e.get("failure_kind", "UNKNOWN") for e in events)
+    errors = sum(1 for e in events if not e["ok"])
+    stats = {
+        "total_tool_calls": len(events),
+        "tool_error_rate": errors / len(events) if events else None,  # ok=False / total; inclui DOMAIN e PROTOCOL
+        "failure_kind_counts": {k: kinds.get(k, 0) for k in (protocol.FAILURE_OK, protocol.FAILURE_DOMAIN,
+                                                             protocol.FAILURE_PROTOCOL)},
+    }
+    reasons = {"tool_error_rate": "no tool calls executed", "total_tool_calls": "",
+               "failure_kind_counts": ""}
+    return _nested("tool_stats", stats, reasons, unmeasured)
+
+
+def _patch_stats(initial: dict[str, str], workspace: Path) -> dict[str, Any]:
+    """Arquivos alterados e linhas somadas/removidas: workspace final contra os arquivos iniciais."""
+    final: dict[str, str] = {}
+    for path in sorted(workspace.rglob("*")):
+        if path.is_file():
+            final[path.relative_to(workspace).as_posix()] = path.read_bytes().decode("utf-8", errors="replace")
+    files_changed = added = removed = 0
+    for name in sorted(set(initial) | set(final)):
+        before, after = initial.get(name), final.get(name)
+        if before == after:
+            continue
+        files_changed += 1
+        matcher = difflib.SequenceMatcher(a=(before or "").splitlines(), b=(after or "").splitlines(),
+                                          autojunk=False)
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag in ("replace", "delete"):
+                removed += i2 - i1
+            if tag in ("replace", "insert"):
+                added += j2 - j1
+    return {"files_changed": files_changed, "lines_added": added, "lines_removed": removed}
+
+
+def _patch_summary(runs: list[dict[str, Any]], unmeasured: dict[str, str]) -> dict[str, Any]:
+    measured = [r["patch_stats"] for r in runs if r.get("patch_stats") is not None]
+    stats = {
+        "measured_runs": len(measured),
+        "unmeasured_runs": len(runs) - len(measured),
+        "files_changed_total": sum(p["files_changed"] for p in measured) if measured else None,
+        "lines_added_total": sum(p["lines_added"] for p in measured) if measured else None,
+        "lines_removed_total": sum(p["lines_removed"] for p in measured) if measured else None,
+    }
+    reasons = {k: "no run produced a measurable workspace (harness error)" for k in stats}
+    return _nested("patch_stats", stats, reasons, unmeasured)
+
+
+def _derived_metrics(runs: list[dict[str, Any]], solved: int, tokens_lb: int | None, spent_lb: float | None,
+                      unmeasured: dict[str, str]) -> dict[str, Any]:
+    """Métricas derivadas do resumo. Limites inferiores são rotulados; ``None`` sempre com motivo."""
+    tokens_lb_per_solved = tokens_lb / solved if tokens_lb is not None and solved > 0 else None
+    cost_lb_per_solved = spent_lb / solved if spent_lb is not None and solved > 0 else None
+    if tokens_lb_per_solved is None:
+        unmeasured["tokens_lower_bound_per_solved"] = "no SOLVED task or no measured usage"
+    if cost_lb_per_solved is None:
+        unmeasured["cost_lower_bound_usd_per_solved"] = "no SOLVED task or no known call price"
+    all_calls = [c for r in runs for c in r["calls"]]
+    cost_coverage = sum(1 for c in all_calls if c.get("cost_usd") is not None) / len(all_calls) if all_calls else None
+    if cost_coverage is None:
+        unmeasured["cost_coverage_rate"] = "no provider calls executed"
+    wall = _wall_stats(runs, unmeasured)
+    tool = _tool_stats(runs, unmeasured)
+    patch = _patch_summary(runs, unmeasured)
+    return {"tokens_lower_bound_per_solved": tokens_lb_per_solved,
+            "cost_lower_bound_usd_per_solved": cost_lb_per_solved, "cost_coverage_rate": cost_coverage,
+            "wall_clock_ms_stats": wall, "tool_stats": tool, "patch_stats": patch}
+
+
 def summarize(runs: list[dict[str, Any]], *, planned: int, config: BatchConfig, aborted: str | None) -> dict[str, Any]:
     n = len(runs)
     outcomes = Counter(r["outcome"] for r in runs)
@@ -651,7 +762,9 @@ def summarize(runs: list[dict[str, Any]], *, planned: int, config: BatchConfig, 
     if tokens_lb is None:
         unmeasured["tokens_lower_bound"] = "no run returned measured usage"
     known_costs = [r["total_cost_usd"] for r in runs if r["total_cost_usd"] is not None]
-    spent_lb = sum(known_costs)
+    spent_lb = sum(known_costs) if known_costs else None  # None, nunca 0: sem custo conhecido nada foi medido
+    if spent_lb is None:
+        unmeasured["spent_lower_bound_usd"] = "no call has a known price"
     total_cost = _sum_or_none(runs, "total_cost_usd", "one or more calls have unknown price (cost_basis unknown)",
                               unmeasured)
     totals: dict[str, Any] = {
@@ -662,7 +775,7 @@ def summarize(runs: list[dict[str, Any]], *, planned: int, config: BatchConfig, 
     totals["failed_attempt_count_total"] = _sum_or_none(runs, "failed_attempt_count", reason, unmeasured)
     if "failed_attempt_count" in unmeasured:  # mesma grandeza, nome do campo de resumo
         unmeasured["failed_attempt_count_total"] = unmeasured.pop("failed_attempt_count")
-    rates = _rates(runs, verdicts, outcomes, unmeasured)
+    rates = _rates(runs, outcomes, unmeasured)
     solved = outcomes.get(protocol.OUTCOME_SOLVED, 0)
     per_solved = total_tokens / solved if total_tokens is not None and solved > 0 else None
     if per_solved is None:
@@ -670,6 +783,8 @@ def summarize(runs: list[dict[str, Any]], *, planned: int, config: BatchConfig, 
             "requires all runs with measured usage and at least one SOLVED task")
     if config.git_head is None:
         unmeasured["git_head"] = "not provided (--git-head) and git unavailable in this environment"
+
+    derived = _derived_metrics(runs, solved, tokens_lb, spent_lb, unmeasured)
 
     families: dict[str, Counter] = {}
     for r in runs:
@@ -717,6 +832,8 @@ def summarize(runs: list[dict[str, Any]], *, planned: int, config: BatchConfig, 
         "failed_attempt_count_total": totals["failed_attempt_count_total"],
         **rates,
         "core_tokens_partial_per_solved": per_solved,
+        # Limites inferiores: somam só o que foi medido; rotulados como tal.
+        **derived,
         "s0_qualification": qualify_s0(runs, totals, registry),
         "runs": [_brief(r, r.get("leak_clean", False)) for r in runs],
         "unmeasured": unmeasured,

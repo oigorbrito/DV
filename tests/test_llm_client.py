@@ -422,3 +422,36 @@ def test_exhausted_timeouts_close_the_call_with_every_attempt_retryable():
     assert sleeps == [1.0, 2.0]
     assert isinstance(failed.cause, httpx.ReadTimeout)
     assert failed.wall_clock_ms >= 0
+
+
+# --- usage_details: snapshot aditivo de auditoria (não é campo do contrato v3) ----------
+
+
+def test_usage_details_keeps_measured_zero_and_omits_absent_fields():
+    usage = SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15,
+                            prompt_tokens_details=SimpleNamespace(cached_tokens=0),
+                            completion_tokens_details=None)
+    resp = _client(lambda **_: _raw(content="ok", usage_obj=usage)).complete(MESSAGES)
+    assert resp.usage_details == {"prompt_tokens_details": {"cached_tokens": 0}}  # 0 medido permanece
+    assert resp.cached_input_tokens == 0
+
+
+def test_usage_details_none_when_usage_absent_and_serialisable_when_present():
+    import json as _json
+
+    absent = _client(lambda **_: _raw(content="ok", usage_obj=None, prompt=None)).complete(MESSAGES)
+    assert absent.usage_details is None
+
+    class Opaque:  # objeto que o json padrão não serializa: vira texto, nunca quebra o ledger
+        def __str__(self):
+            return "opaque"
+
+    usage = SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2,
+                            prompt_tokens_details=SimpleNamespace(cached_tokens=3,
+                                                                  cache_creation_token_details=[Opaque()]),
+                            completion_tokens_details=SimpleNamespace(reasoning_tokens=7))
+    resp = _client(lambda **_: _raw(content="ok", usage_obj=usage)).complete(MESSAGES)
+    _json.dumps(resp.usage_details)  # não levanta
+    assert resp.usage_details["prompt_tokens_details"]["cached_tokens"] == 3
+    assert resp.usage_details["completion_tokens_details"]["reasoning_tokens"] == 7
+    assert resp.usage_details["cache_creation_token_details"] == ["opaque"]

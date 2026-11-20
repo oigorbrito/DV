@@ -129,8 +129,10 @@ def test_batch_of_ten_mixes_solved_failure_and_provider_error(tmp_path):
     assert summary["total_tasks"] == 10 and summary["executed"] == 10 and summary["aborted"] is None
     assert summary["outcome_counts"] == {"SOLVED": 7, "FAILURE": 2, "INCONCLUSIVE": 1}
     assert summary["verifier_verdict_counts"] == {"PASS": 7, "FAIL": 3, "NO_VERDICT": 0}
-    assert summary["pass_rate"] == pytest.approx(7 / 10)
-    assert summary["solved_rate"] == pytest.approx(7 / 10)
+    assert summary["pass_rate"] == pytest.approx(7 / 9)  # SOLVED / (SOLVED + FAILURE): INCONCLUSIVE fora
+    assert summary["inconclusive_count"] == 1 and summary["verdict_available_count"] == 10
+    assert "INCONCLUSIVE runs excluded" in summary["pass_rate_definition"]
+    assert summary["solved_rate"] == pytest.approx(7 / 10)  # INCONCLUSIVE conta como não resolvido
     assert summary["false_finish_rate"] == pytest.approx(2 / 9)  # FAILURE / (SOLVED + FAILURE)
     assert summary["family_outcome_counts"]["F4"] == {"SOLVED": 1, "FAILURE": 0, "INCONCLUSIVE": 1}
     assert summary["family_outcome_counts"]["F5"]["FAILURE"] == 1
@@ -464,3 +466,69 @@ def test_task_workspace_has_only_visible_files_and_oracle_is_outside(tmp_path):
     b.run_one(task, run_dir, ScriptedLLM([make_response(calls=[submit("s", "x")])]), _config())
     assert {x.name for x in (run_dir / "workspace").iterdir()} == {"greet.py"}
     assert Path(run_dir / "oracle" / "check.py").read_text(encoding="utf-8") == task.oracle
+
+
+# --- pass_rate, contadores e métricas derivadas (auditoria dos baldes) -------------------
+
+
+def test_pass_rate_is_none_with_reason_when_no_verified_run(tmp_path):
+    summary, _ = _run(tmp_path, tasks=[t for t in b.builtin_suite() if t.task_id == PROVIDER_ERROR_TASK])
+    assert summary["outcome_counts"]["INCONCLUSIVE"] == 1
+    assert summary["pass_rate"] is None and summary["unmeasured"]["pass_rate"]
+
+
+def test_patch_stats_per_run_and_aggregate_from_workspace_diff(tmp_path):
+    tasks = [t for t in b.builtin_suite() if t.task_id in ("f1-greet", "f5-money")]
+    summary, outdir = _run(tmp_path, tasks=tasks)
+    greet = _read(outdir / "runs" / "f1-greet" / "result.json")["patch_stats"]
+    # 'return "Hello " + name' -> 'return "Hello, " + name + "!"': uma linha removida e uma adicionada
+    assert greet == {"files_changed": 1, "lines_added": 1, "lines_removed": 1}
+    assert _read(outdir / "runs" / "f5-money" / "result.json")["patch_stats"] == {
+        "files_changed": 0, "lines_added": 0, "lines_removed": 0}
+    agg = summary["patch_stats"]
+    assert agg["measured_runs"] == 2 and agg["unmeasured_runs"] == 0
+    assert agg["files_changed_total"] == 1 and agg["lines_added_total"] == 1 and agg["lines_removed_total"] == 1
+
+
+def test_mixed_batch_derived_metrics_are_labelled_lower_bounds(tmp_path):
+    summary, _ = _run(tmp_path)
+    assert summary["tokens_lower_bound_per_solved"] == pytest.approx(18 * 15 / 7)
+    assert summary["cost_lower_bound_usd_per_solved"] == pytest.approx(18 * 0.01 / 7)
+    assert summary["cost_coverage_rate"] == pytest.approx(18 / 19)  # 19 chamadas; a do provider_error sem preço
+    assert summary["tool_stats"]["total_tool_calls"] > 0  # inclui o evento de submit
+    fk = summary["tool_stats"]["failure_kind_counts"]
+    assert set(fk) == {"OK", "DOMAIN_FAILURE", "PROTOCOL_ERROR"}
+    assert summary["tool_stats"]["tool_error_rate"] == 0.0  # só submit/write bem-sucedidos nesta suíte
+
+
+def test_tool_error_rate_counts_domain_failures(tmp_path):
+    def reads_missing_then_submits(task):
+        if task.task_id != "f1-greet":
+            return ScriptedLLM([make_response(calls=[submit("s", "x")])])
+        return ScriptedLLM([
+            make_response(calls=[call("r1", "read_file", {"path": "nope.py"})]),
+            make_response(calls=[submit("s1", "gave up")]),
+        ])
+
+    summary, _ = _run(tmp_path, tasks=b.builtin_suite()[:1], make_llm=reads_missing_then_submits)
+    stats = summary["tool_stats"]
+    assert stats["total_tool_calls"] == 2
+    assert stats["failure_kind_counts"]["DOMAIN_FAILURE"] == 1
+    assert stats["tool_error_rate"] == pytest.approx(1 / 2)
+
+
+def test_wall_clock_stats_are_nearest_rank_percentiles(tmp_path):
+    assert b._percentile([1, 2, 3, 4], 0.5) == 2
+    assert b._percentile([1, 2, 3, 4], 0.95) == 4
+    assert b._percentile([], 0.5) is None
+    summary, _ = _run(tmp_path, tasks=b.builtin_suite()[:2])
+    stats = summary["wall_clock_ms_stats"]
+    assert stats["run_p50"] is not None and stats["run_p95"] >= stats["run_p50"]
+    assert stats["call_p50"] is not None and stats["call_p95"] >= stats["call_p50"]
+
+
+def test_null_derived_metrics_have_reasons(tmp_path):
+    summary, _ = _run(tmp_path, tasks=[t for t in b.builtin_suite() if t.task_id == PROVIDER_ERROR_TASK])
+    assert summary["tokens_lower_bound_per_solved"] is None and summary["unmeasured"]["tokens_lower_bound_per_solved"]
+    assert summary["cost_lower_bound_usd_per_solved"] is None and summary["unmeasured"]["cost_lower_bound_usd_per_solved"]
+    assert summary["spent_lower_bound_usd"] is None  # o provider_error não tem custo conhecido: nunca 0

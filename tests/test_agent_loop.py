@@ -638,3 +638,68 @@ def test_total_cache_read_tokens_is_none_with_reason_when_not_exposed(tmp_path):
     result = make_loop(tmp_path, ScriptedLLM([make_response(calls=[submit("s", "done")])])).run("t", "s", max_steps=10)
     assert result.total_cache_read_tokens is None
     assert "not exposed" in result.unmeasured["total_cache_read_tokens"]
+
+
+# --- orçamento pelo limite inferior: retry recuperado não é orçamento não verificável ----
+
+
+def _raw_tool(tc, usage=None):
+    from types import SimpleNamespace as NS
+
+    message = NS(content=None, tool_calls=[NS(id=tc.id, function=NS(name=tc.name, arguments=tc.arguments))])
+    usage = usage if usage is not None else NS(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+    return NS(choices=[NS(message=message)], usage=usage, model="mock", id="r1")
+
+
+@pytest.mark.parametrize("error_name", ["ServiceUnavailableError", "Timeout"])
+def test_recovered_503_or_timeout_does_not_abort_turn_when_budget_is_set(tmp_path, error_name):
+    import litellm
+    from dv_harness.llm_client import LLMClient, RetryPolicy
+
+    def transient():
+        if error_name == "Timeout":
+            return litellm.Timeout(message="request timed out", model="mock", llm_provider="gemini")
+        return litellm.ServiceUnavailableError(message="503", model="mock", llm_provider="gemini")
+
+    write = call("w", "write_file", {"path": "f.txt", "content": "done\n"})
+    detailed = litellm.Usage(prompt_tokens=10, completion_tokens=5, total_tokens=15,
+                             prompt_tokens_details={"cached_tokens": 4})
+    seq = {"n": 0}
+
+    def completion(**_):
+        seq["n"] += 1
+        if seq["n"] == 1:
+            raise transient()  # 1a tentativa falha; a 2a se recupera
+        return _raw_tool(write, detailed) if seq["n"] == 2 else _raw_tool(submit("s", "ok"), detailed)
+
+    llm = LLMClient(default_model="mock", completion_fn=completion, cost_fn=lambda **_: 0.01,
+                    retry=RetryPolicy(max_attempts=3, base_delay_s=0), sleep_fn=lambda _s: None)
+    path = tmp_path / "ledger.jsonl"
+    with RunLedger(path) as ledger:
+        result = make_loop(tmp_path, llm, ledger=ledger).run("t", "s", max_steps=8, max_cost_usd=0.5)
+
+    assert result.status == p.STATUS_COMPLETED  # não é budget_unverifiable
+    assert (tmp_path / "f.txt").read_text(encoding="utf-8") == "done\n"  # a ferramenta do turno foi executada
+    assert result.failed_attempt_count == 1
+    recovered = result.calls[0]
+    assert recovered.attempt_usage_complete is False  # flag preservada (contrato v3)
+    assert recovered.cost_usd == pytest.approx(0.01)  # custo conhecido: a tentativa bem-sucedida foi medida
+    assert result.total_tokens is None  # total continua null com tentativa falha (D5)
+    assert result.tokens_lower_bound == 2 * 15  # limite inferior inclui a chamada recuperada
+    finished = [e for e in map(json.loads, path.read_text(encoding="utf-8").splitlines())
+                if e["event"] == "call_finished"]
+    assert finished[0]["record"]["usage_details"]["prompt_tokens_details"]["cached_tokens"] == 4
+
+
+def test_unknown_price_still_makes_budget_unverifiable(tmp_path):
+    from litellm.exceptions import BadRequestError
+    from dv_harness.llm_client import LLMClient
+
+    def no_price(**_):
+        raise BadRequestError(message="no price", model="mock", llm_provider="gemini")
+
+    write = call("w", "write_file", {"path": "f.txt", "content": "x"})
+    llm = LLMClient(default_model="mock", completion_fn=lambda **_: _raw_tool(write), cost_fn=no_price)
+    result = make_loop(tmp_path, llm).run("t", "s", max_steps=8, max_cost_usd=0.5)
+    assert result.status == p.STATUS_UNVERIFIABLE  # preço desconhecido continua sendo o gatilho de parada
+    assert not (tmp_path / "f.txt").exists()
