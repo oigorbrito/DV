@@ -42,7 +42,7 @@ Os conceitos abaixo são medíveis e, em parte, já estão no DV. Podem virar cl
 
 | Conceito | Já existe no DV? | Observação |
 |---|---|---|
-| Custo de falhas e retentativas no total | **Sim** | `docs/research/EXPERIMENTAL-GOVERNANCE.md`: falhas retêm todo o custo. `run-accounting-contract-v1.json`: custo de recursos consumidos é mantido. |
+| Custo de falhas e retentativas no total | **Sim** | `docs/EXPERIMENTAL-GOVERNANCE.md`: falhas retêm todo o custo. `run-accounting-contract-v1.json`: custo de recursos consumidos é mantido. |
 | Ausência explícita de dado | **Sim** | `failure-attribution-v1.json`: telemetria ausente nunca é zero. |
 | Custo monetário como métrica | **Sim, como métrica** | `run-accounting-contract-v1.json` lista custo total monetário. Não há campo de custo no `dv_ledgers`. |
 | Tokens brutos vs. faturados por turno | **Não** | Pendência R1.2 do roadmap (semântica de cache). |

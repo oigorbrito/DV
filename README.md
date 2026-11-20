@@ -257,9 +257,12 @@ Evidência histórica não é reclassificada silenciosamente como nova evidênci
 Antes de afirmar que o repositório está pronto, execute a partir da raiz:
 
 ```bash
+python -m pip install -r requirements-dv-harness.txt
 python scripts/harness.py
-python -m unittest discover -s tests -v
+python -m pytest tests -v
 ```
+
+A suíte do harness (`tests/`) usa pytest. Os testes de `run_bash`, do canário I3b e da verificação por mutação exigem POSIX (Linux ou WSL); fora dele são pulados ou não se aplicam. Ver `docs/TESTING.md`.
 
 Os testes de tooling do programa (`tools/test_*.py`) rodam a partir do diretório `tools/`, porque alguns casos usam caminhos relativos (`../experiments/...`). É o mesmo padrão dos workflows `wp03`–`wp07`:
 
