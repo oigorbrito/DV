@@ -718,3 +718,124 @@ def test_timeout_with_grandchild_holding_pipes_returns_bounded(tmp_path):
     result = ex.run_bash("sleep 30 & sleep 30", timeout=1)
     assert result.timed_out is True
     assert _time.monotonic() - started < 20  # sem o limite, o neto segurando o pipe travaria aqui
+
+
+# --- leitura somente-leitura do spill (b0_plus) e aviso de linha única longa -----------------
+
+import os as _os_spill  # noqa: E402
+from pathlib import Path as _Path_spill  # noqa: E402
+
+
+def _spill_pair(tmp_path, limit=300):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    spill = tmp_path / "bash_logs"
+    ex = ToolExecutor(ws, max_output_chars=limit, harness_variant=B0_PLUS, full_output_dir=spill)
+    return ws, spill, ex
+
+
+def _saved_log_path(result):
+    return _Path_spill(result.output.split("[Full output saved to: ")[1].split("]")[0])
+
+
+def test_read_file_reads_full_spill_log_with_line_range(tmp_path):
+    _ws, _spill, ex = _spill_pair(tmp_path)
+    result = ex.run_bash(f'"{sys.executable}" -c "for i in range(1, 301): print(\'line\', i)"')
+    assert result.truncated is True
+    log = _saved_log_path(result)
+    ranged = ex.read_file(str(log), start_line=3, end_line=5)
+    assert ranged.ok is True
+    assert "3\tline 3" in ranged.output and "5\tline 5" in ranged.output
+    assert "6\tline 6" not in ranged.output
+    tail = ex.read_file(str(log), start_line=299)
+    assert tail.ok is True and "299\tline 299" in tail.output and "300\tline 300" in tail.output
+
+
+def test_spill_is_readable_but_never_writable_or_editable(tmp_path):
+    ws, _spill, ex = _spill_pair(tmp_path)
+    result = ex.run_bash(f'"{sys.executable}" -c "print(\'x\' * 2000)"')
+    log = _saved_log_path(result)
+    before = log.read_bytes()
+    written = ex.write_file(str(log), "tampered")
+    assert written.ok is False and "escapes" in written.error
+    edited = ex.edit_file(str(log), "x", "y")
+    assert edited.ok is False and "escapes" in edited.error
+    assert log.read_bytes() == before
+    assert list(ws.iterdir()) == []
+
+
+def test_write_into_spill_by_relative_traversal_is_refused(tmp_path):
+    ws, spill, ex = _spill_pair(tmp_path)
+    ex.run_bash(f'"{sys.executable}" -c "print(\'x\' * 2000)"')
+    result = ex.write_file("../bash_logs/planted.txt", "payload")
+    assert result.ok is False and "escapes" in result.error
+    assert not (spill / "planted.txt").exists()
+
+
+def test_path_traversal_out_of_spill_is_rejected(tmp_path):
+    _ws, spill, ex = _spill_pair(tmp_path)
+    ex.run_bash(f'"{sys.executable}" -c "print(\'x\' * 2000)"')
+    (tmp_path / "secret.txt").write_text("TOP SECRET", encoding="utf-8")
+    result = ex.read_file(str(spill / ".." / "secret.txt"))
+    assert result.ok is False and "escapes" in result.error
+    assert "TOP SECRET" not in result.output and "TOP SECRET" not in (result.error or "")
+
+
+def test_symlink_inside_spill_is_not_readable(tmp_path):
+    _ws, spill, ex = _spill_pair(tmp_path)
+    spill.mkdir()
+    target = tmp_path / "target.txt"
+    target.write_text("LINKED", encoding="utf-8")
+    link = spill / "link.txt"
+    try:
+        _os_spill.symlink(target, link)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable on this platform")
+    result = ex.read_file(str(link))
+    assert result.ok is False and "symlinks" in result.error
+    assert "LINKED" not in result.output
+
+
+def test_b0_refuses_reading_spill_and_files_outside_workspace(tmp_path):  # invariância do b0
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    spill = tmp_path / "bash_logs"
+    spill.mkdir()
+    (spill / "log.txt").write_text("LOG\n", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("OUT\n", encoding="utf-8")
+    ex = ToolExecutor(ws, full_output_dir=spill)
+    in_spill = ex.read_file(str(spill / "log.txt"))
+    assert in_spill.ok is False and "escapes" in in_spill.error
+    assert ex.read_file(str(outside)).ok is False
+
+
+def test_single_long_line_gets_specific_warning_not_a_continuation(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "min.json").write_text('{"a":"' + "x" * 2000 + '"}\n', encoding="utf-8")
+    ex = ToolExecutor(ws, max_output_chars=800, harness_variant=B0_PLUS)
+    result = ex.read_file("min.json")
+    assert result.truncated is True
+    assert result.output.startswith('1\t{"a":"')
+    assert "line 1 has" in result.output and "cut is inside this line" in result.output
+    assert "Use start_line=" not in result.output and "start_line=2" not in result.output
+    assert "run_bash" in result.output
+    assert len(result.output) <= 800
+
+
+def test_single_long_line_in_b0_keeps_the_original_marker(tmp_path):  # invariância do b0
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "min.json").write_text('{"a":"' + "x" * 2000 + '"}\n', encoding="utf-8")
+    result = ToolExecutor(ws, max_output_chars=800).read_file("min.json")
+    assert "caracteres omitidos" in result.output and "cut is inside this line" not in result.output
+
+
+def test_cut_between_lines_keeps_the_continuation_hint(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "f.txt").write_text("a\nb\nc\n" + "y" * 2000 + "\n", encoding="utf-8")
+    result = ToolExecutor(ws, max_output_chars=800, harness_variant=B0_PLUS).read_file("f.txt")
+    assert _re.search(r"\[Truncated: showing lines 1-3 of \d+\. Use start_line=4 to continue\.\]", result.output)
+    assert "cut is inside this line" not in result.output

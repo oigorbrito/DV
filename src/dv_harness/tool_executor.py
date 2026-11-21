@@ -479,6 +479,39 @@ class ToolExecutor:
         self.max_output_chars = max_output_chars
         self.harness_variant = check_variant(harness_variant)
 
+    def _readable_spill(self) -> Path | None:
+        """Diretório de saída completa que ``read_file`` pode ler. Só em b0_plus; ``None`` nos demais casos."""
+        if self.harness_variant != VARIANT_B0_PLUS or self.full_output_dir is None:
+            return None
+        return self.full_output_dir.resolve()
+
+    def _resolve_for_read(self, path: str) -> Path:
+        """Resolve para LEITURA. Em b0_plus também aceita arquivos dentro de ``full_output_dir`` (só leitura).
+
+        Escrita e edição continuam usando ``_resolve``, que aceita apenas a raiz do workspace. Dentro do
+        diretório de saída, cada componente do caminho é checado: symlink é recusado. Caminho que escapa
+        do diretório cai no confinamento normal da raiz e é recusado do mesmo jeito.
+        """
+        spill = self._readable_spill()
+        if spill is None:
+            return self._resolve(path)
+        if "\x00" in path:
+            raise PathError("invalid path: contains NUL byte")
+        raw = Path(path)
+        candidate = Path(os.path.normpath(raw if raw.is_absolute() else self.root / raw))
+        try:
+            relative = candidate.relative_to(spill)
+        except ValueError:
+            return self._resolve(path)
+        if not relative.parts:
+            raise WorkspaceEscapeError(f"path is not a file inside the full output directory: {path}")
+        current = spill
+        for part in relative.parts:
+            current = current / part
+            if current.is_symlink():
+                raise WorkspaceEscapeError(f"symlinks are not readable in the full output directory: {path}")
+        return current
+
     def _resolve(self, path: str) -> Path:
         """Resolve ``path`` contra ``root``. Levanta ``PathError`` (ou subclasse) se inválido."""
         if "\x00" in path:
@@ -515,7 +548,7 @@ class ToolExecutor:
             return ToolResult(ok=False, error="end_line must be >= start_line")
 
         try:
-            target = self._resolve(path)
+            target = self._resolve_for_read(path)
         except PathError as exc:
             return ToolResult(ok=False, error=str(exc))
         if not target.exists():
@@ -878,6 +911,18 @@ def get_tool_schemas(variant: str = "b0") -> list[dict[str, Any]]:
     return schemas
 
 
+_LONG_LINE_RESERVE = 400  # caracteres reservados para o aviso de linha única truncada
+
+
+def _long_line_warning(line_no: int, length: int, shown: int) -> str:
+    return (
+        f"[Truncated: line {line_no} has {length} characters and only its first {shown} are shown, "
+        f"so the cut is inside this line, not between lines. Do not skip ahead to the next line: "
+        f"the rest of line {line_no} is not shown. To inspect it, use run_bash with a filter "
+        f"(for example cut, fold, grep -o or jq) that extracts the part you need.]"
+    )
+
+
 def _window_with_continuation(numbered: str, start: int, total: int, limit: int) -> tuple[str, bool]:
     """Janela de leitura (b0_plus): cabeça até o teto de linhas ou de caracteres, com pista de continuação.
 
@@ -894,8 +939,9 @@ def _window_with_continuation(numbered: str, start: int, total: int, limit: int)
             break
         shown.append(line)
         used += cost
-    if not shown and lines:  # uma linha sozinha maior que o orçamento: mostra o início dela
-        shown = [lines[0][:budget]]
+    if not shown and lines:  # a primeira linha sozinha excede o orçamento: corte por tamanho
+        head_budget = max(0, limit - _LONG_LINE_RESERVE)
+        return lines[0][:head_budget] + "\n" + _long_line_warning(start, len(lines[0]), head_budget), True
     if len(shown) == len(lines):
         return numbered, False
     end = start + len(shown) - 1
