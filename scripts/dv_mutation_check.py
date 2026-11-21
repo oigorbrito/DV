@@ -50,6 +50,7 @@ SCRIPTS = "scripts"
 T_LEDGER = ("tests/test_ledger.py", "tests/test_agent_loop.py")
 T_BATCH = ("tests/test_batch_run.py",)
 T_B0_PLUS = ("tests/test_b0_plus_variant.py",)
+T_LADDER = ("tests/test_naive_laddering.py",)
 
 MUTANTS: tuple[Mutant, ...] = (
     # --- precedência de estados (D1) -----------------------------------------------
@@ -465,6 +466,19 @@ MUTANTS: tuple[Mutant, ...] = (
            "        stale = _stale_read_indices(messages, calls) if self.harness_variant == VARIANT_B0_PLUS else {}",
            "        stale = _stale_read_indices(messages, calls)",
            "b0 invalidates stale reads (default mode no longer isolated)", T_B0_PLUS),
+    # --- naive laddering guiado por oraculo externo: parada no oraculo, orcamento global, workspace limpo ---
+    Mutant("M100", f"{SRC}/laddering.py",
+           "        if oracle_pass:",
+           "        if False:",
+           "ladder does not stop when the external oracle approves a rung (keeps escalating)", T_LADDER),
+    Mutant("M101", f"{SRC}/laddering.py",
+           "            if remaining <= 0:",
+           "            if False:",
+           "ladder escalates after the global budget is exhausted", T_LADDER),
+    Mutant("M102", f"{SRC}/laddering.py",
+           "            shutil.rmtree(workspace)",
+           "            pass",
+           "ladder reuses the previous rung's workspace instead of a clean snapshot copy", T_LADDER),
 )
 
 

@@ -31,6 +31,7 @@ então ``treatment_eligible`` é sempre ``False`` aqui.
 
 from __future__ import annotations
 
+import dataclasses
 import difflib
 import hashlib
 import json
@@ -47,6 +48,7 @@ from typing import Any
 
 from dv_harness import protocol
 from dv_harness.agent_loop import AgentLoop
+from dv_harness.laddering import StepResult
 from dv_harness.context_manager import ContextManager
 from dv_harness.ledger import RunLedger, reconcile
 from dv_harness.tool_executor import ToolExecutor
@@ -425,6 +427,17 @@ def _truncate(text: str) -> str:
     return text if len(text) <= ERROR_MAX_CHARS else text[:ERROR_MAX_CHARS] + "..."
 
 
+def run_agent_loop(task: BatchTask, workspace: Path, llm: Any, config: BatchConfig, *,
+                   max_cost_usd: float, ledger: RunLedger, bash_logs: Path | None) -> Any:
+    """Uma execução do AgentLoop sobre ``workspace``. Usada por ``run_one`` e pelo degrau do laddering."""
+    variant = check_variant(config.harness_variant)
+    loop = AgentLoop(llm, ToolExecutor(workspace, harness_variant=variant, full_output_dir=bash_logs),
+                     ContextManager(keep_recent_observations=10, harness_variant=variant), ledger=ledger,
+                     harness_variant=variant)
+    return loop.run(task.statement, SYSTEM_PROMPT, max_steps=config.max_steps,
+                    max_cost_usd=max_cost_usd, run_id=task.task_id)
+
+
 def run_one(task: BatchTask, run_dir: Path, llm: Any, config: BatchConfig, *,
             max_cost_usd: float | None = None) -> dict[str, Any]:
     """Executa uma tarefa em ``run_dir`` e devolve o relatório (também gravado em ``result.json``)."""
@@ -444,11 +457,8 @@ def run_one(task: BatchTask, run_dir: Path, llm: Any, config: BatchConfig, *,
         variant = check_variant(config.harness_variant)
         # Saída completa de run_bash (b0_plus) fica em run_dir/bash_logs, fora do workspace.
         bash_logs = run_dir / "bash_logs" if variant == VARIANT_B0_PLUS else None
-        loop = AgentLoop(llm, ToolExecutor(workspace, harness_variant=variant, full_output_dir=bash_logs),
-                         ContextManager(keep_recent_observations=10, harness_variant=variant), ledger=ledger,
-                         harness_variant=variant)
-        result = loop.run(task.statement, SYSTEM_PROMPT, max_steps=config.max_steps,
-                          max_cost_usd=cap, run_id=task.task_id)
+        result = run_agent_loop(task, workspace, llm, config, max_cost_usd=cap, ledger=ledger,
+                                bash_logs=bash_logs)
 
     verdict = verify(oracle_path, workspace)
     patch = _patch_stats(task.files, workspace)  # pós-execução: arquivos iniciais vs. finais do workspace
@@ -916,6 +926,30 @@ def run_batch(tasks: Sequence[BatchTask], outdir: Path, *, config: BatchConfig, 
         raise RuntimeError("secret found in batch summary; summary not written")
     (outdir / "batch-summary.json").write_text(text, encoding="utf-8")
     return summary
+
+
+def ladder_step_runner(task: BatchTask, make_llm: Callable[[Any], Any], config: BatchConfig) -> Callable[..., Any]:
+    """Adaptador do laddering: um degrau é uma execução do AgentLoop b0_plus no workspace limpo do controlador.
+
+    ``make_llm(rung)`` devolve o cliente do degrau (modelo e esforço do degrau). O custo do degrau é o limite
+    inferior medido (soma das chamadas com preço conhecido), nunca um valor estimado.
+    """
+
+    def run_step(rung: Any, workspace: Path, bash_logs: Path, cap_usd: float) -> StepResult:
+        step_config = dataclasses.replace(config, model=rung.model, max_steps=rung.max_steps,
+                                          harness_variant=rung.harness_variant)
+        with RunLedger(bash_logs.parent / "ledger.jsonl") as ledger:
+            result = run_agent_loop(task, workspace, make_llm(rung), step_config, max_cost_usd=cap_usd,
+                                    ledger=ledger, bash_logs=bash_logs)
+        known = [call.cost_usd for call in result.calls if call.cost_usd is not None]
+        return StepResult(
+            status=result.status,
+            cost_lower_bound_usd=sum(known) if known else None,
+            tokens_lower_bound=result.tokens_lower_bound,
+            wall_clock_ms=int(result.total_wall_clock_ms or 0),
+        )
+
+    return run_step
 
 
 def resolve_git_head(repo: Path) -> str | None:
