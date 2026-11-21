@@ -106,6 +106,8 @@ class BatchTask:
     verifier_ref: str | None = None
     repository: str | None = None
     base_sha: str | None = None
+    # Patch de referência como conteúdo pós-patch dos arquivos afetados (validado por task_integrity).
+    reference_files: dict[str, str] = dataclasses.field(default_factory=dict)
 
     @property
     def statement_sha256(self) -> str:
@@ -377,7 +379,9 @@ def _task_from_entry(entry: Any, seen: set[str]) -> BatchTask:
     oracle = entry.get("oracle")
     if not isinstance(oracle, str) or not oracle.strip():
         raise ManifestError(f"{tid}: oracle must be a non-empty string")
+    references = _files_from_entry(tid, entry["reference_files"]) if "reference_files" in entry else {}
     return BatchTask(task_id=tid, family=family, statement=statement, files=files, oracle=oracle,
+                     reference_files=references,
                      verifier_ref=entry.get("verifier_ref") if isinstance(entry.get("verifier_ref"), str) else None,
                      repository=entry.get("repository") if isinstance(entry.get("repository"), str) else None,
                      base_sha=base_sha)

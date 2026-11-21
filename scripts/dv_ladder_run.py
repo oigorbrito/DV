@@ -45,6 +45,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--request-timeout-s", type=float, default=REQUEST_TIMEOUT_S, metavar="S",
                         help=f"timeout por requisição HTTP; padrão: {REQUEST_TIMEOUT_S}")
     parser.add_argument("--limit", type=int, default=None, metavar="N", help="executa só as N primeiras tarefas")
+    parser.add_argument("--validate-tasks", action=argparse.BooleanOptionalAction, default=True,
+                        help="padrão ligado: valida a integridade das tarefas antes de qualquer chamada de modelo")
     return parser
 
 
@@ -148,6 +150,15 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.limit is not None:
         tasks = tasks[:args.limit]
+
+    if args.validate_tasks:  # gate pré-lote: nenhuma chamada de modelo se houver violação
+        from dv_harness.task_integrity import integrity_gate, integrity_table
+
+        report = integrity_gate(tasks)
+        if not report.passed:
+            print(integrity_table(report))
+            print("blocked: task integrity gate failed. Nothing was run.")
+            return 2
 
     policy_sha256 = hashlib.sha256(args.policy.read_bytes()).hexdigest()
 

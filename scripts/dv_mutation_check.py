@@ -51,6 +51,7 @@ T_LEDGER = ("tests/test_ledger.py", "tests/test_agent_loop.py")
 T_BATCH = ("tests/test_batch_run.py",)
 T_B0_PLUS = ("tests/test_b0_plus_variant.py",)
 T_LADDER = ("tests/test_naive_laddering.py",)
+T_INTEGRITY = ("tests/test_task_integrity.py",)
 
 MUTANTS: tuple[Mutant, ...] = (
     # --- precedência de estados (D1) -----------------------------------------------
@@ -479,6 +480,19 @@ MUTANTS: tuple[Mutant, ...] = (
            "            shutil.rmtree(workspace)",
            "            pass",
            "ladder reuses the previous rung's workspace instead of a clean snapshot copy", T_LADDER),
+    # --- validador de integridade de tarefas: .git, oraculo pre-patch, gold pos-patch ---
+    Mutant("M103", f"{SRC}/task_integrity.py",
+           "    return \".git\" in rel.split(\"/\")",
+           "    return False",
+           "exposed .git directory is not detected as a git leak", T_INTEGRITY),
+    Mutant("M104", f"{SRC}/task_integrity.py",
+           "    if pre_verdict == \"PASS\":",
+           "    if False:",
+           "oracle that already passes on the initial state is accepted (trivial task not rejected)", T_INTEGRITY),
+    Mutant("M105", f"{SRC}/task_integrity.py",
+           "    if verdict != \"PASS\":",
+           "    if False:",
+           "reference patch that the oracle rejects is accepted (broken gold not rejected)", T_INTEGRITY),
 )
 
 

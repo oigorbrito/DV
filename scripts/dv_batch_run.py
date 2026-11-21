@@ -83,6 +83,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--fail-fast", action="store_true",
                         help="para o lote no primeiro outcome diferente de SOLVED (padrão: segue, sem abortar)")
     parser.add_argument("--limit", type=int, default=None, metavar="N", help="executa só as N primeiras tarefas")
+    parser.add_argument("--validate-tasks", action="store_true",
+                        help="opt-in: valida a integridade das tarefas antes de qualquer chamada de modelo")
     parser.add_argument("--harness-variant", default="b0", choices=["b0", "b0_plus"],
                         help="b0 (padrão, inalterado) ou b0_plus (ablação opt-in: edit fallback, cauda, doom loop)")
     parser.add_argument("--candidate-id", default=None, metavar="ID",
@@ -111,6 +113,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"blocked: {args.api_key_env} is not set (or empty) in this environment. Nothing was run.")
         print("The key must be added as an environment variable in the environment settings, then a new session started.")
         return 2
+
+    if args.validate_tasks:  # gate pré-lote opcional: nenhuma chamada de modelo se houver violação
+        from dv_harness.task_integrity import integrity_gate, integrity_table
+
+        report = integrity_gate(tasks)
+        if not report.passed:
+            print(integrity_table(report))
+            print("blocked: task integrity gate failed. Nothing was run.")
+            return 2
 
     config = batch.BatchConfig(
         model=args.model,
