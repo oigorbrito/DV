@@ -154,3 +154,121 @@ def test_anchor_commit_exists_in_history():
     if result.returncode != 0:
         pytest.skip("repositorio sem o historico completo (shallow clone)")
     assert result.returncode == 0
+
+
+# --- amarração wp08-binding-v1 (pc1-pc6) e pins de código/dataset -------------------------------
+# Pins dos artefatos desta amarração. Mudança em qualquer um exige nova versão (AGENTS.md, regra 3).
+BINDING = P1 / "wp08-binding-v1.json"
+MANIFEST = P1 / "wp08-tasks" / "screening-n10-manifest-v1.json"
+REPORT = P1 / "wp08-integrity-report-v1.json"
+ANALYSIS = ROOT / "src" / "dv_harness" / "ablation_analysis.py"
+BINDING_SHA256 = "208f8623eb824ee3e5ff647538aa91124a313d6ab7d6431c8b5c8977c83fe5fd"
+MANIFEST_SHA256 = "e361befd750cf48e70463a34718613521900a050b2a19431cfcf8f2c0115ae21"
+REPORT_SHA256 = "e24f9079e764066eaaef02535844d7631d2bc1442da9fedee93d13492772608f"
+DATASET_SHA256 = "a14461c8c24960108601c7983d8e21d28a28303ed618fa827cabea3b6af4ecc5"
+ANALYSIS_CODE_SHA256 = "16f7a44aae8e713119363106672d0e6f983bfb697f8d54b898f678a405a8b488"
+TASK_IDS = ["f1-greet", "f1-clamp", "f2-pricing", "f2-grades", "f3-percent", "f3-bytes", "f4-leap",
+            "f4-roman", "f5-money", "f6-cli-config"]
+FILLED = {"PASSED", "FROZEN", "FILLED"}
+
+
+def _binding():
+    return _load(BINDING)["preconditions"]
+
+
+def test_binding_and_its_inputs_are_pinned_byte_for_byte():
+    assert _sha(BINDING) == BINDING_SHA256
+    assert _sha(MANIFEST) == MANIFEST_SHA256
+    assert _sha(REPORT) == REPORT_SHA256
+
+
+def test_binding_identity_points_to_the_frozen_protocol_and_contract_v4():
+    data = _load(BINDING)
+    assert data["binding_id"] == "wp08-binding-v1"
+    assert data["binds_protocol"] == "wp08-b0-plus-laddering-ablation-v1"
+    assert data["binds_protocol_sha256"] == WP08_SHA256
+    assert data["contract_id"] == "p1-run-accounting-v4"
+    assert data["contract_sha256"] == V4_SHA256
+    assert data["anchored_commit"] == "7a99cf8"
+    assert data["status"] == "FROZEN_BINDING_AWAITING_PC5_PROBE"
+
+
+def test_pc6_analysis_code_hash_matches_the_module_and_the_pin():
+    from dv_harness import ablation_analysis as aa
+
+    assert aa.analysis_code_sha256(ANALYSIS) == ANALYSIS_CODE_SHA256
+    assert _binding()["pc6_analysis_code_frozen"]["analysis_code_sha256"] == ANALYSIS_CODE_SHA256
+
+
+def test_pc1_integrity_report_passed_for_all_tasks_with_no_violations():
+    report = _load(REPORT)
+    assert report["passed"] is True
+    assert report["dataset_sha256"] == DATASET_SHA256
+    assert [t["task_id"] for t in report["task_reports"]] == TASK_IDS
+    assert all(t["passed"] and t["violations"] == [] for t in report["task_reports"])
+    pc1 = _binding()["pc1_offline_task_integrity_gate"]
+    assert pc1["status"] == "PASSED" and pc1["integrity_gate_passed"] is True
+    assert pc1["report_sha256"] == REPORT_SHA256 and pc1["task_count"] == len(TASK_IDS)
+
+
+def test_pc2_dataset_sha256_is_recomputed_from_the_pinned_manifest_offline():
+    from dv_harness import batch
+    from dv_harness.task_integrity import dataset_fingerprint
+
+    suite_id, tasks, file_sha = batch.load_manifest(MANIFEST)  # sem oráculo: só definição de tarefa
+    assert suite_id == "screening-n10" and file_sha == MANIFEST_SHA256
+    assert [t.task_id for t in tasks] == TASK_IDS
+    assert dataset_fingerprint(tasks) == DATASET_SHA256
+    pc2 = _binding()["pc2_dataset_sha256_frozen"]
+    assert pc2["status"] == "FROZEN" and pc2["dataset_sha256"] == DATASET_SHA256
+    assert pc2["tasks_source_sha256"] == MANIFEST_SHA256 and pc2["task_ids"] == TASK_IDS
+
+
+def test_pc3_models_are_priced_in_the_litellm_table_with_the_recorded_values():
+    import litellm
+
+    pc3 = _binding()["pc3_model_bindings"]
+    assert pc3["status"] == "FILLED"
+    assert pc3["cost_share_cap_sum"] == pytest.approx(1.0)
+    assert pc3["pricing_source"].startswith("litellm==1.110.1")
+    for rung in ("rung_0", "rung_1"):
+        model = pc3[rung]["model_identity"]
+        entry = litellm.model_cost[model]  # KeyError = modelo sem preço cadastrado
+        assert entry["input_cost_per_token"] == pc3[rung]["price_usd_per_token"]["input"]
+        assert entry["output_cost_per_token"] == pc3[rung]["price_usd_per_token"]["output"]
+        assert entry["supports_function_calling"] is True
+        assert pc3[rung]["reasoning_effort"] is None
+
+
+def test_pc4_budget_and_rotation_arithmetic():
+    pc4 = _binding()["pc4_global_budget"]
+    assert pc4["status"] == "FILLED"
+    assert pc4["repetitions_n"] == 4 and pc4["repetitions_n"] % 4 == 0
+    cycle = pc4["rotation_cycle"]
+    arms = {"A_B0", "B_B0_PLUS", "C_SOLO_R1", "D_DV_LADDERING"}
+    assert len(cycle) == 4 and all(set(row) == arms for row in cycle)
+    assert all({row[pos] for row in cycle} == arms for pos in range(4))  # quadrado latino completo
+    assert pc4["batch_budget_usd"] == pytest.approx(pc4["task_count"] * pc4["per_task_budget_usd"])
+    assert pc4["task_count"] == len(TASK_IDS)
+    assert pc4["arm_budgets"]["D_DV_LADDERING"]["policy_global_max_cost_usd"] == pc4["per_task_budget_usd"]
+
+
+def test_only_pc5_is_pending_and_the_pc4_budget_incompatibility_is_recorded_open():
+    pre = _binding()
+    assert pre["pc5_capability_probe"]["status"] == "PENDING_LIVE_PROBE"
+    assert pre["pc5_capability_probe"]["probe_executed"] is False
+    for key in ("pc1_offline_task_integrity_gate", "pc2_dataset_sha256_frozen", "pc3_model_bindings",
+                "pc4_global_budget", "pc6_analysis_code_frozen"):
+        assert pre[key]["status"] in FILLED, key
+    # Além do pc5, o binding registra uma incompatibilidade de orçamento. Ela não é escondida.
+    assert pre["pc4_global_budget"]["known_incompatibility"]["status"] == "OPEN_DECISION_REQUIRED"
+    assert _load(BINDING)["open_items_before_live_run"] == ["pc5_capability_probe",
+                                                            "known_incompatibility (pc4)"]
+
+
+def test_wp08_preconditions_in_the_frozen_protocol_are_still_unfilled():
+    # O wp08 é imutável: os valores ficam no binding, e o protocolo continua mostrando o estado original.
+    pre = _load(P1 / "wp08-b0-plus-laddering-ablation-v1.json")["preconditions"]
+    assert pre["pc1_offline_task_integrity_gate"]["status"] == "NOT_RUN"
+    assert pre["pc2_dataset_sha256_frozen"]["value"] is None
+    assert pre["pc6_analysis_code_frozen"]["analysis_code_sha256"] is None

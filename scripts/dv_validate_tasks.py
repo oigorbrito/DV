@@ -55,8 +55,9 @@ def main(argv: list[str] | None = None) -> int:
     report = integrity_gate(tasks)
     print(integrity_table(report))
     if args.output_json is not None:
-        args.output_json.write_text(json.dumps(report_to_dict(report), indent=2, ensure_ascii=False),
-                                    encoding="utf-8")
+        # bytes com LF explícito: o relatório pode ser pinado e tem de ser idêntico no Windows e no WSL
+        text = json.dumps(report_to_dict(report), indent=2, ensure_ascii=False) + "\n"
+        args.output_json.write_bytes(text.encode("utf-8"))
     if args.strict and not report.passed:
         return 1
     return 0
