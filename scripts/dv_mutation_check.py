@@ -53,6 +53,7 @@ T_B0_PLUS = ("tests/test_b0_plus_variant.py",)
 T_LADDER = ("tests/test_naive_laddering.py",)
 T_INTEGRITY = ("tests/test_task_integrity.py",)
 T_V4 = ("tests/test_v4_telemetry_conformance.py",)
+T_ABL = ("tests/test_ablation_analysis.py",)
 
 MUTANTS: tuple[Mutant, ...] = (
     # --- precedência de estados (D1) -----------------------------------------------
@@ -515,6 +516,23 @@ MUTANTS: tuple[Mutant, ...] = (
            "summary[\"dataset_sha256\"] = dataset_fingerprint(tasks)",
            "summary[\"dataset_sha256\"] = None",
            "batch summary drops dataset_sha256 (traceability lost)", T_V4),
+    # --- análise pareada wp08 (GAP-8) -----------------------------------------------------------
+    Mutant("M111", f"{SRC}/ablation_analysis.py",
+           "    if len(set(datasets.values())) != 1:",
+           "    if False:",
+           "mixed batches with divergent dataset_sha256 are accepted", T_ABL),
+    Mutant("M112", f"{SRC}/ablation_analysis.py",
+           "NON_INFERIORITY_MARGIN = 0.02",
+           "NON_INFERIORITY_MARGIN = 0.05",
+           "H2 non-inferiority margin widened from 0.02 to 0.05", T_ABL),
+    Mutant("M113", f"{SRC}/ablation_analysis.py",
+           "    if ceiling_violations_d > 0:",
+           "    if False:",
+           "global ceiling violations in D do not block H2 promotion", T_ABL),
+    Mutant("M114", f"{SRC}/ablation_analysis.py",
+           "    measured = [r for r in runs if r.cost_accounting_status == MEASURED and r.cost_lower_bound_usd is not None]",
+           "    measured = [r for r in runs if r.cost_lower_bound_usd is not None]",
+           "INCONCLUSIVE-cost runs with a known price leak into cost_per_solved (segregation broken)", T_ABL),
 )
 
 

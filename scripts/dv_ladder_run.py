@@ -92,6 +92,8 @@ def _aggregate(payloads: list[dict[str, Any]], policy: Any, policy_sha256: str, 
     tokens = [p["total_tokens_lower_bound"] for p in payloads if p["total_tokens_lower_bound"] is not None]
     return {
         "schema": "dv-laddering-batch-v1",  # nome do lote não é normatizado no contrato v4 (ver GAP-5 no contrato)
+        "contract_id": protocol.CONTRACT_ID,
+        "global_max_cost_usd": policy.global_max_cost_usd,
         "policy_id": policy.policy_id,
         "policy_sha256": policy_sha256,
         "dataset_sha256": dataset_sha256,
@@ -117,7 +119,9 @@ def _aggregate(payloads: list[dict[str, Any]], policy: Any, policy_sha256: str, 
         "ledger_sha256_by_task": {p["task_id"]: p["ledger_sha256_by_rung"] for p in payloads},
         "tasks_detail": [
             {"task_id": p["task_id"], "final_outcome": p["final_outcome"], "resolved_at_rung": p["resolved_at_rung"],
-             "escalation_count": p["escalation_count"], "cost_accounting_status": p["cost_accounting_status"]}
+             "escalation_count": p["escalation_count"], "cost_accounting_status": p["cost_accounting_status"],
+             "total_cost_lower_bound_usd": p["total_cost_lower_bound_usd"],
+             "telemetry_complete": p["telemetry_complete"], "ceiling_respected": p["ceiling_respected"]}
             for p in payloads
         ],
     }

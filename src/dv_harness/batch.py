@@ -50,7 +50,7 @@ from dv_harness import protocol
 from dv_harness.agent_loop import AgentLoop
 from dv_harness.laddering import StepResult
 from dv_harness.context_manager import ContextManager
-from dv_harness.ledger import RunLedger, file_sha256, reconcile
+from dv_harness.ledger import RunLedger, file_sha256, max_repeat_streak, reconcile, tool_signatures
 from dv_harness.tool_executor import ToolExecutor
 from dv_harness.variants import DEFAULT_VARIANT, REFERENCE_PROVENANCE, VARIANT_B0_PLUS, check_variant
 
@@ -529,6 +529,10 @@ def run_one(task: BatchTask, run_dir: Path, llm: Any, config: BatchConfig, *,
              "arguments_sha256": e.arguments_sha256}
             for e in result.tool_events
         ],
+        # Métricas de análise do wp08 (apenas relato; nenhuma decisão do harness depende delas).
+        "edit_file_calls": sum(1 for e in result.tool_events if e.name == "edit_file"),
+        "edit_file_failures": sum(1 for e in result.tool_events if e.name == "edit_file" and not e.ok),
+        "doom_loop_streak_max": max_repeat_streak(tool_signatures(run_dir / "ledger.jsonl")),
         "patch_stats": patch,
         "unmeasured": dict(result.unmeasured),
     }
@@ -582,6 +586,9 @@ def harness_error_report(task: BatchTask, run_dir: Path, exc: BaseException, con
     if report["ledger_sha256"] is None:
         report["unmeasured"]["ledger_sha256"] = "ledger file was not created before the harness error"
     report["patch_stats"] = None
+    for key in ("edit_file_calls", "edit_file_failures", "doom_loop_streak_max"):
+        report[key] = None
+        report["unmeasured"][key] = reason
     report["unmeasured"]["patch_stats"] = reason
     if in_flight:
         report["unmeasured"]["in_flight_calls"] = f"calls {in_flight} started and not finished: consumption unknown"
@@ -600,6 +607,10 @@ def _brief(report: dict[str, Any], leak_clean: bool) -> dict[str, Any]:
         "telemetry_complete": report["telemetry_complete"],
         "cost_accounting_status": report["cost_accounting_status"],
         "ledger_sha256": report["ledger_sha256"],
+        "total_cost_usd": report["total_cost_usd"],
+        "edit_file_calls": report["edit_file_calls"],
+        "edit_file_failures": report["edit_file_failures"],
+        "doom_loop_streak_max": report["doom_loop_streak_max"],
         "outcome": report["outcome"],
         "steps": report["steps"],
         "total_tokens": report["total_tokens"],
