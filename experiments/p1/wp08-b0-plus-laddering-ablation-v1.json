@@ -1,0 +1,142 @@
+{
+  "schema_id": "ndv-p1-wp08-b0-plus-laddering-ablation-v1",
+  "experiment_id": "wp08-b0-plus-laddering-ablation-v1",
+  "status": "FROZEN_PROTOCOL",
+  "classification": "PROSPECTIVE_FROZEN_NOT_EXECUTED",
+  "anchored_commit": "dfda77c",
+  "contract_id": "p1-run-accounting-v4",
+  "purpose": "Desenho confirmatorio pre-registrado para duas hipoteses: H1, se o substrato nivelado b0_plus melhora o b0 sem regressao de custo; H2, se o laddering guiado por oraculo externo (Rung_0 -> Rung_1) iguala o modelo forte isolado com custo menor. Nenhuma execucao foi feita.",
+  "non_claims": [
+    "Nao e avaliacao de ranking de executores (executor_ranking FORBIDDEN, como em wp04).",
+    "Nao e evidencia de qualificacao de executor: treatment_eligible permanece falso ate existir qualification_evidence_ref.",
+    "Nao e evidencia de melhoria de arquitetura sem os resultados congelados aqui."
+  ],
+  "preconditions": {
+    "pc1_offline_task_integrity_gate": {
+      "command": "python scripts/dv_validate_tasks.py --tasks-dir <TASKS_DIR_PINNED> --strict --output-json <INTEGRITY_REPORT>",
+      "requirement": "Todas as tarefas do lote aprovam no gate: falha no estado inicial (PRE_PATCH_ORACLE_PASSED ausente), aprovacao apos a referencia quando declarada (GOLD_PATCH_FAILED ausente), zero GIT_LEAK_DETECTED e zero SOLUTION_LEAK_DETECTED.",
+      "status": "NOT_RUN"
+    },
+    "pc2_dataset_sha256_frozen": {
+      "value": null,
+      "rule": "Preenchido uma unica vez pelo gate de pc1 e congelado antes do primeiro run. Qualquer mudanca de tarefa depois disso invalida o experimento e exige nova versao.",
+      "status": "PENDING_GATE"
+    },
+    "pc3_model_bindings": {
+      "rung_0": {"role": "modelo economico", "model_identity": null, "reasoning_effort": null, "binding_ref": "a criar no padrao experiments/p1/wp04-executor-binding-v2.template.json"},
+      "rung_1": {"role": "modelo forte", "model_identity": null, "reasoning_effort": null, "binding_ref": "a criar no padrao experiments/p1/wp04-executor-binding-v2.template.json"},
+      "rule": "As identidades exatas dos modelos sao fixadas por binding antes do gate. Modelo de catalogo dinamico ou roteamento aleatorio e proibido (wp04, executor_binding_policy).",
+      "status": "PENDING_BINDING"
+    },
+    "pc4_global_budget": {
+      "global_max_cost_usd": null,
+      "rule": "Valor unico para todos os bracos, fixado antes do gate. Braco C recebe o orcamento global completo; braco D recebe o mesmo teto global, dividido pela regra cap_i de contract v4.",
+      "status": "PENDING_VALUE"
+    },
+    "pc5_capability_probe": {
+      "rule": "Probe da regra b) do contract v4 aprovado para cada provedor usado em Rung_0 ou Rung_1, antes do primeiro run.",
+      "status": "NOT_IMPLEMENTED"
+    },
+    "pc6_analysis_code_frozen": {
+      "rule": "O codigo de analise da secao statistics e commitado e seu hash SHA-256 registrado aqui antes do primeiro run.",
+      "analysis_code_sha256": null,
+      "status": "NOT_IMPLEMENTED"
+    }
+  },
+  "arms": [
+    {
+      "arm_id": "A_B0",
+      "harness_variant": "b0",
+      "rung_plan": "somente Rung_0",
+      "role": "baseline congelado"
+    },
+    {
+      "arm_id": "B_B0_PLUS",
+      "harness_variant": "b0_plus",
+      "rung_plan": "somente Rung_0",
+      "role": "mesmo modelo economico do braco A; diferenca unica e o substrato"
+    },
+    {
+      "arm_id": "C_SOLO_R1",
+      "harness_variant": "b0_plus",
+      "rung_plan": "somente Rung_1, com orcamento global completo",
+      "role": "modelo forte isolado, referencia de qualidade e de custo para H2"
+    },
+    {
+      "arm_id": "D_DV_LADDERING",
+      "harness_variant": "b0_plus",
+      "rung_plan": "Rung_0 -> Rung_1, clean_workspace, parada guiada somente pelo oraculo externo",
+      "role": "controlador Naive Laddering (src/dv_harness/laddering.py)"
+    }
+  ],
+  "common_settings": {
+    "dataset": "dataset_sha256 de pc2, identico em todos os bracos",
+    "global_max_cost_usd": "pc4, identico em todos os bracos",
+    "max_steps": 8,
+    "state_carryover": "clean_workspace",
+    "telemetry": "contract v4, regras a-d",
+    "repetitions_per_task_per_arm": 3
+  },
+  "repetition_and_order": {
+    "min_repetitions": 3,
+    "rotation_cycle": [
+      ["A_B0", "B_B0_PLUS", "C_SOLO_R1", "D_DV_LADDERING"],
+      ["B_B0_PLUS", "C_SOLO_R1", "D_DV_LADDERING", "A_B0"],
+      ["C_SOLO_R1", "D_DV_LADDERING", "A_B0", "B_B0_PLUS"],
+      ["D_DV_LADDERING", "A_B0", "B_B0_PLUS", "C_SOLO_R1"]
+    ],
+    "rotation_rule": "Na repeticao r (1-based), a ordem dos bracos e rotation_cycle[(r - 1) mod 4]. A ordem e fixada antes da execucao e nao e escolhida pelo resultado.",
+    "balance_note": "Com N=3, as tres primeiras linhas do ciclo deixam D_DV_LADDERING sem nenhuma posicao inicial. O equilibrio posicional completo exige N multiplo de 4. N=3 e o minimo; N=4 e o desenho balanceado recomendado.",
+    "rationale": "Neutraliza variacao de latencia e de cache de API que depende da posicao no tempo."
+  },
+  "metrics": {
+    "pass_rate_decontaminated": "SOLVED / (SOLVED + FAILURE) por run. INCONCLUSIVE fica fora do denominador e e contado a parte. Tarefas que falham na pc1 nao entram.",
+    "edit_failure_rate": "chamadas de edit_file com ok=false / total de chamadas de edit_file, por run (de tool_events do result.json).",
+    "doom_loop_streak_max": "maior sequencia de chamadas identicas consecutivas (mesmo nome e mesmos argumentos). Depende de GAP-1 do contract v4.",
+    "steps": "total_steps por run.",
+    "cost_per_solved_usd": "soma do total_cost_lower_bound_usd de todos os runs do braco, incluindo degraus reprovados, dividida pelo numero de runs SOLVED do braco. Calculado somente sobre runs com cost_accounting_status=MEASURED; runs INCONCLUSIVE sao reportados a parte e nao sao descartados."
+  },
+  "statistics": {
+    "unit": "tarefa",
+    "per_task_summary": "para cada tarefa e para cada metrica, media sobre as repeticoes daquele braco",
+    "paired_difference": "d_task = metrica(braco X) - metrica(braco Y), na mesma tarefa. Pares com zero runs verificados em um dos bracos sao excluidos e contados a parte.",
+    "method": "bootstrap pareado por tarefa, reamostragem com reposicao das tarefas",
+    "resamples": 10000,
+    "seed": 20261120,
+    "confidence": 0.95,
+    "interval": "percentil 2,5% e 97,5%",
+    "non_inferiority_margin_h2": 0.02
+  },
+  "hypotheses": {
+    "H1_b0_plus_vs_b0": {
+      "comparison": "B_B0_PLUS contra A_B0 (mesmo modelo de Rung_0)",
+      "promoted_if_any_of": [
+        "IC95 inferior de (pass_rate_decontaminated[B] - pass_rate_decontaminated[A]) > 0, e cost_per_solved sem regressao",
+        "IC95 superior de (edit_failure_rate[B] - edit_failure_rate[A]) < 0 e IC95 inferior de (pass_rate[B] - pass_rate[A]) >= 0, e cost_per_solved sem regressao"
+      ],
+      "no_regression_cost": "IC95 superior de (cost_per_solved[B] - cost_per_solved[A]) <= 0,10 x cost_per_solved[A]",
+      "rejected_if": "nenhuma das condicoes de promocao e atendida",
+      "doom_loop_note": "doom_loop_streak_max e reportado como metrica secundaria, nao como criterio de promocao, ate GAP-1 ser fechado."
+    },
+    "H2_dv_laddering_vs_solo_r1": {
+      "comparison": "D_DV_LADDERING contra C_SOLO_R1",
+      "promoted_if": [
+        "IC95 inferior de (pass_rate[D] - pass_rate[C]) >= -0,02 (nao inferioridade)",
+        "IC95 superior de (cost_per_solved[D] - cost_per_solved[C]) < 0 (reducao significativa)",
+        "zero violacoes de teto global em todos os runs de D (ceiling_rule do contract v4)"
+      ],
+      "rejected_if": "qualquer condicao acima falha"
+    }
+  },
+  "telemetry_and_inconclusive_rule": {
+    "rule": "Run com telemetry_complete=false tem cost_accounting_status=INCONCLUSIVE. E contado separadamente na analise de custo e nunca descartado em silencio. Se a fracao de runs INCONCLUSIVE por custo em um braco for maior que 10%, a comparacao de custo desse braco e declarada INCONCLUSIVE, sem promocao baseada em custo.",
+    "oracle_rule": "oracle_pass nunca e alterado por telemetria (contract v4, regra a)."
+  },
+  "governance": {
+    "task_selection": "conjunto de tarefas congelado em pc2. Nenhuma tarefa e incluida, removida ou reclassificada depois do gate.",
+    "stopping_rules": "nao ha parada antecipada por resultado. O experimento roda todas as repeticoes planejadas.",
+    "analysis_tuning": "limiares, seed, reamostragens e margem de 0,02 sao fixados aqui. Nao podem ser ajustados apos ver resultados (AGENTS.md, regra 8).",
+    "variant_isolation": "o braco A usa somente harness_variant=b0, com o comportamento padrao inalterado. B, C e D usam somente b0_plus.",
+    "evidence_level": "E0 ate a execucao. Promocao so pode ocorrer com resultados que atendam os criterios desta secao."
+  }
+}

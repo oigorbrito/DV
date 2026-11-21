@@ -90,3 +90,5 @@ O B0+ acima é um diff mínimo para uma **nova ablação/variante**, não promo�
 4. Categorias além de edição, com resposta exata (leitura, agregação, QA). Hoje o suíte só tem edição.
 
 Nenhum experimento foi executado nesta etapa. Nenhum dos mecanismos acima foi promovido por evidência experimental.
+
+**Status final (ancorado em `dfda77c`).** O protocolo confirmatório está congelado em `experiments/p1/wp08-b0-plus-laddering-ablation-v1.json` (`FROZEN_PROTOCOL`, `PROSPECTIVE_FROZEN_NOT_EXECUTED`), sob o contrato `experiments/p1/run-accounting-contract-v4.json` (`p1-run-accounting-v4`, `FROZEN_SPECIFICATION`, supersede v3). Os sha256 dos dois artefatos estão fixados em `tests/test_governance_contracts.py`. Antes de qualquer disparo, o protocolo exige as pré-condições `pc1`–`pc6`, todas ainda abertas: gate de integridade do lote, `dataset_sha256` congelado, bindings de modelo, `global_max_cost_usd`, probe de capacidade do provedor e hash do código de análise. Os lacunas de implementação que bloqueiam a execução estão listadas em `implementation_gaps` do contrato v4 (GAP-1 a GAP-8). Os contratos `v1`, `v2` e `v3` permanecem inalterados.
