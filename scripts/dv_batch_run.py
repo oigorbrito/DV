@@ -1,4 +1,4 @@
-"""Lote multi-tarefa com modelo real (contrato p1-run-accounting-v3). Ver ``src/dv_harness/batch.py``.
+"""Lote multi-tarefa com modelo real (contrato p1-run-accounting-v4). Ver ``src/dv_harness/batch.py``.
 
 Padrões idênticos aos do ``dv_smoke_run.py``: ``--model claude-haiku-5-5``, ``--api-key-env ANTHROPIC_API_KEY``.
 Para Gemini: ``--model gemini/gemini-3.1-flash-lite --api-key-env GEMINI_API_KEY``.
@@ -142,7 +142,8 @@ def main(argv: list[str] | None = None) -> int:
                          request_timeout_s=args.request_timeout_s)
 
     secret = os.environ[args.api_key_env]
-    summary = batch.run_batch(tasks, args.outdir, config=config, make_llm=make_llm, secret=secret)
+    summary = batch.run_batch(tasks, args.outdir, config=config, make_llm=make_llm, secret=secret,
+                              integrity_validated=args.validate_tasks)
 
     leak = (not summary["leak_scan"]["clean"]) or any(not r["leak_clean"] for r in summary["runs"])
     print(json.dumps({k: summary[k] for k in (

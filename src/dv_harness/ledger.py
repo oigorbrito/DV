@@ -20,6 +20,7 @@ protocolo, e o diretório do ledger deve ser tratado como artefato sensível.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -63,6 +64,36 @@ def read_events(path: str | os.PathLike[str]) -> Iterator[dict[str, Any]]:
                 yield json.loads(line)
             except json.JSONDecodeError as exc:
                 raise ValueError(f"{path}:{lineno}: invalid JSON line: {exc}") from exc
+
+
+def file_sha256(path: str | os.PathLike[str]) -> str:
+    """SHA-256 dos bytes exatos do arquivo (v4, regra d: ``ledger_sha256``). Lê após o fechamento do ledger."""
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def tool_signatures(path: str | os.PathLike[str]) -> list[tuple[str, str]]:
+    """Sequência ``(nome, arguments_sha256)`` das ferramentas, na ordem do ledger.
+
+    Reconstrói a sequência de chamadas usada pelo doom loop só a partir do ``ledger.jsonl``. Os argumentos
+    nunca aparecem aqui, só o digest. Eventos antigos sem o campo entram com digest vazio.
+    """
+    signatures: list[tuple[str, str]] = []
+    for ev in read_events(path):
+        if ev.get("event") == "tool_finished":
+            tool = ev["tool_event"]
+            signatures.append((tool["name"], tool.get("arguments_sha256", "")))
+    return signatures
+
+
+def max_repeat_streak(signatures: list[tuple[str, str]]) -> int:
+    """Maior sequência de elementos idênticos consecutivos. Lista vazia devolve 0."""
+    best = current = 0
+    previous: tuple[str, str] | None = None
+    for signature in signatures:
+        current = current + 1 if signature == previous else 1
+        previous = signature
+        best = max(best, current)
+    return best
 
 
 def reconcile(path: str | os.PathLike[str]) -> dict[str, Any]:

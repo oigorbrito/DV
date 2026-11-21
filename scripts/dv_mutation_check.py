@@ -52,6 +52,7 @@ T_BATCH = ("tests/test_batch_run.py",)
 T_B0_PLUS = ("tests/test_b0_plus_variant.py",)
 T_LADDER = ("tests/test_naive_laddering.py",)
 T_INTEGRITY = ("tests/test_task_integrity.py",)
+T_V4 = ("tests/test_v4_telemetry_conformance.py",)
 
 MUTANTS: tuple[Mutant, ...] = (
     # --- precedência de estados (D1) -----------------------------------------------
@@ -493,6 +494,27 @@ MUTANTS: tuple[Mutant, ...] = (
            "    if verdict != \"PASS\":",
            "    if False:",
            "reference patch that the oracle rejects is accepted (broken gold not rejected)", T_INTEGRITY),
+    # --- conformidade de telemetria v4 (GAP-1 a GAP-4) ----------------------------------------
+    Mutant("M106", f"{SRC}/agent_loop.py",
+           "hashlib.sha256(_canonical_arguments(arguments).encode(\"utf-8\")).hexdigest()",
+           "hashlib.sha256(arguments.encode(\"utf-8\")).hexdigest()",
+           "arguments digest is not canonical (key order changes the digest)", T_V4),
+    Mutant("M107", f"{SRC}/ledger.py",
+           "return hashlib.sha256(Path(path).read_bytes()).hexdigest()",
+           "return hashlib.sha256(Path(path).read_bytes()[:-1]).hexdigest()",
+           "ledger_sha256 hashes a different byte range than the file on disk", T_V4),
+    Mutant("M108", f"{SRC}/protocol.py",
+           "and bool(c.attempt_usage_complete)",
+           "and True",
+           "telemetry ignores unmeasured attempt usage (run is marked complete)", T_V4),
+    Mutant("M109", f"{SRC}/batch.py",
+           "\"oracle_pass\": None if verdict is None else verdict == protocol.VERDICT_PASS,",
+           "\"oracle_pass\": None if verdict is None else (verdict == protocol.VERDICT_PASS and result.telemetry_complete),",
+           "telemetry failure falsifies oracle_pass (orthogonality broken)", T_V4),
+    Mutant("M110", f"{SRC}/batch.py",
+           "summary[\"dataset_sha256\"] = dataset_fingerprint(tasks)",
+           "summary[\"dataset_sha256\"] = None",
+           "batch summary drops dataset_sha256 (traceability lost)", T_V4),
 )
 
 

@@ -122,7 +122,8 @@ def test_v3_contract_is_unchanged():
 
 def test_v3_contract_names_v2_as_superseded_and_matches_code_id():
     doc = _v3()
-    assert doc["contract_id"] == p.CONTRACT_ID == "p1-run-accounting-v3"
+    assert doc["contract_id"] == p.CONTRACT_ID_V3 == "p1-run-accounting-v3"
+    assert p.CONTRACT_ID == "p1-run-accounting-v4"  # vigente desde v4; v3 segue como evidência
     assert doc["supersedes"] == p.CONTRACT_ID_V2
 
 

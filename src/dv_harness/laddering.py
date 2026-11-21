@@ -21,13 +21,14 @@ import json
 import re
 import shutil
 from collections.abc import Callable, Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from dv_harness import protocol
 from dv_harness.variants import check_variant
 
-LADDERING_SCHEMA = "dv-laddering-v1"
+LADDERING_SCHEMA = "dv-laddering-summary-v1"  # normativo: experiments/p1/run-accounting-contract-v4.json, regra c
 OUTCOME_SOLVED = "SOLVED"
 OUTCOME_FAILURE = "FAILURE"
 OUTCOME_INCONCLUSIVE = "INCONCLUSIVE"
@@ -152,6 +153,8 @@ class StepResult:
     cost_lower_bound_usd: float | None = None
     tokens_lower_bound: int | None = None
     wall_clock_ms: int = 0
+    telemetry_complete: bool = False  # v4 regra a: False quando algum balde obrigatório não foi medido
+    ledger_sha256: str | None = None  # SHA-256 dos bytes do ledger do degrau (v4 regra d)
 
 
 @dataclass(frozen=True)
@@ -166,6 +169,8 @@ class RungTrace:
     cost_lower_bound_usd: float | None
     tokens_lower_bound: int | None
     wall_clock_ms: int
+    telemetry_complete: bool = False
+    ledger_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -179,6 +184,12 @@ class LadderingResult:
     total_tokens_lower_bound: int | None
     total_wall_clock_ms: int
     rung_traces: list[RungTrace]
+    # v4 regra a: telemetria da tarefa inteira. Falha de telemetria não altera final_outcome.
+    telemetry_complete: bool = False
+    cost_accounting_status: str = "INCONCLUSIVE"
+    # v4 regra c: teto global estrito sobre a soma de todos os degraus. None quando nada foi medido.
+    ceiling_respected: bool | None = None
+    ledger_sha256_by_rung: dict[str, str | None] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -233,6 +244,7 @@ class LadderController:
                 status=step.status, rung_status=rung_status, oracle_pass=oracle_pass, cap_usd=cap,
                 cost_lower_bound_usd=step.cost_lower_bound_usd, tokens_lower_bound=step.tokens_lower_bound,
                 wall_clock_ms=step.wall_clock_ms,
+                telemetry_complete=step.telemetry_complete, ledger_sha256=step.ledger_sha256,
             ))
             if step.cost_lower_bound_usd is not None:  # Invariante 6: soma todos os degraus executados
                 spent += step.cost_lower_bound_usd
@@ -249,10 +261,16 @@ class LadderController:
             if rung_status not in rung.escalate_on_statuses:  # Invariante 5: status não escalável
                 outcome = OUTCOME_FAILURE
                 break
+        # Telemetria completa exige cada degrau medido. Um degrau sem medida torna a tarefa INCONCLUSIVE de custo.
+        complete = bool(traces) and all(t.telemetry_complete for t in traces)
         return LadderingResult(
             task_id=task_id, policy_id=policy.policy_id, final_outcome=outcome, resolved_at_rung=resolved,
             escalation_count=escalations, total_cost_lower_bound_usd=cost_total,
             total_tokens_lower_bound=tokens_total, total_wall_clock_ms=wall_total, rung_traces=traces,
+            telemetry_complete=complete,
+            cost_accounting_status=protocol.cost_accounting_status(complete),
+            ceiling_respected=None if cost_total is None else cost_total <= policy.global_max_cost_usd,
+            ledger_sha256_by_rung={t.rung_id: t.ledger_sha256 for t in traces},
         )
 
     def _clean_workspace(self) -> Path:

@@ -24,7 +24,7 @@ import hashlib
 import json
 import shutil
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -68,7 +68,7 @@ def _passed(violations: Sequence[TaskIntegrityViolation]) -> bool:
     return not any(v.severity in FAILING_SEVERITIES for v in violations)
 
 
-def _task_definition_sha(task: BatchTask) -> str:
+def task_definition_sha256(task: BatchTask) -> str:
     """Hash da definição da tarefa (independe de formatação do arquivo de manifesto e do SO)."""
     canon = {
         "task_id": task.task_id, "family": task.family, "statement": task.statement, "files": task.files,
@@ -196,11 +196,22 @@ def validate_task_integrity(task: BatchTask, *, scratch_dir: Path) -> TaskIntegr
     return TaskIntegrityReport(
         task_id=task.task_id,
         passed=_passed(violations),
-        manifest_sha256=_task_definition_sha(task),
+        manifest_sha256=task_definition_sha256(task),
         workspace_sha256=_tree_sha256(snapshot),
         oracle_sha256=_sha256(task.oracle.encode("utf-8")),
         violations=violations,
     )
+
+
+def _dataset_sha256(pairs: Iterable[tuple[str, str]]) -> str:
+    """SHA-256 do dataset: pares (task_id, sha da definição), ordenados. Independe da ordem de entrada."""
+    body = "\n".join(f"{task_id}\t{sha}" for task_id, sha in sorted(pairs))
+    return _sha256(body.encode("utf-8"))
+
+
+def dataset_fingerprint(tasks: Sequence[BatchTask]) -> str:
+    """dataset_sha256 sem executar oráculos (v4, regra d). Mesmo valor que ``validate_batch_integrity``."""
+    return _dataset_sha256((t.task_id, task_definition_sha256(t)) for t in tasks)
 
 
 def validate_batch_integrity(tasks: Sequence[BatchTask], *, scratch_root: Path) -> BatchIntegrityReport:
@@ -218,8 +229,7 @@ def validate_batch_integrity(tasks: Sequence[BatchTask], *, scratch_root: Path) 
             report = dataclasses.replace(report, passed=False, violations=[*report.violations, extra])
         seen.add(task.task_id)
         reports.append(report)
-    ordered = sorted(reports, key=lambda r: r.task_id)
-    dataset = _sha256("\n".join(f"{r.task_id}\t{r.manifest_sha256}" for r in ordered).encode("utf-8"))
+    dataset = _dataset_sha256((r.task_id, r.manifest_sha256) for r in reports)
     return BatchIntegrityReport(passed=all(r.passed for r in reports), dataset_sha256=dataset,
                                 task_reports=reports)
 

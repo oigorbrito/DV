@@ -1,4 +1,4 @@
-"""Lote multi-tarefa sobre o ``AgentLoop``, sob o contrato ``p1-run-accounting-v3``.
+"""Lote multi-tarefa sobre o ``AgentLoop``, sob o contrato ``p1-run-accounting-v4``.
 
 Cada tarefa roda em ``<outdir>/runs/<task_id>/`` com:
 
@@ -50,7 +50,7 @@ from dv_harness import protocol
 from dv_harness.agent_loop import AgentLoop
 from dv_harness.laddering import StepResult
 from dv_harness.context_manager import ContextManager
-from dv_harness.ledger import RunLedger, reconcile
+from dv_harness.ledger import RunLedger, file_sha256, reconcile
 from dv_harness.tool_executor import ToolExecutor
 from dv_harness.variants import DEFAULT_VARIANT, REFERENCE_PROVENANCE, VARIANT_B0_PLUS, check_variant
 
@@ -442,6 +442,12 @@ def run_agent_loop(task: BatchTask, workspace: Path, llm: Any, config: BatchConf
                     max_cost_usd=max_cost_usd, run_id=task.task_id)
 
 
+def _definition_sha256(task: BatchTask) -> str:
+    from dv_harness.task_integrity import task_definition_sha256  # import tardio: task_integrity importa batch
+
+    return task_definition_sha256(task)
+
+
 def run_one(task: BatchTask, run_dir: Path, llm: Any, config: BatchConfig, *,
             max_cost_usd: float | None = None) -> dict[str, Any]:
     """Executa uma tarefa em ``run_dir`` e devolve o relatório (também gravado em ``result.json``)."""
@@ -470,6 +476,10 @@ def run_one(task: BatchTask, run_dir: Path, llm: Any, config: BatchConfig, *,
         "task_id": task.task_id,
         "family": task.family,
         "contract_id": protocol.CONTRACT_ID,
+        "harness_variant": variant,
+        "reference_provenance": REFERENCE_PROVENANCE,
+        "task_definition_sha256": _definition_sha256(task),
+        "ledger_sha256": file_sha256(run_dir / "ledger.jsonl"),  # bytes exatos, após fechar o ledger
         "model_requested": config.model,
         "task_cost_cap_usd": cap,
         "statement_sha256": task.statement_sha256,
@@ -479,6 +489,10 @@ def run_one(task: BatchTask, run_dir: Path, llm: Any, config: BatchConfig, *,
         "base_sha": task.base_sha,
         "status": result.status,
         "verifier_verdict": verdict,
+        # v4, regra a: oracle_pass e telemetry_complete são independentes. Telemetria nunca altera oracle_pass.
+        "oracle_pass": None if verdict is None else verdict == protocol.VERDICT_PASS,
+        "telemetry_complete": result.telemetry_complete,
+        "cost_accounting_status": protocol.cost_accounting_status(result.telemetry_complete),
         "outcome": protocol.outcome_for(result.status, verdict),
         "final_answer": result.final_answer,
         "steps": result.steps,
@@ -511,7 +525,8 @@ def run_one(task: BatchTask, run_dir: Path, llm: Any, config: BatchConfig, *,
         "tool_events": [
             {"index": e.index, "call_index": e.call_index, "name": e.name, "ok": e.ok, "format_error": e.format_error,
              "raw_sha256": e.raw_sha256, "raw_len": len(e.raw_output), "truncated": e.truncated,
-             "wall_clock_ms": e.wall_clock_ms, "failure_kind": e.failure_kind, "timed_out": e.timed_out}
+             "wall_clock_ms": e.wall_clock_ms, "failure_kind": e.failure_kind, "timed_out": e.timed_out,
+             "arguments_sha256": e.arguments_sha256}
             for e in result.tool_events
         ],
         "patch_stats": patch,
@@ -536,12 +551,19 @@ def harness_error_report(task: BatchTask, run_dir: Path, exc: BaseException, con
         "task_id": task.task_id,
         "family": task.family,
         "contract_id": protocol.CONTRACT_ID,
+        "harness_variant": config.harness_variant,
+        "reference_provenance": REFERENCE_PROVENANCE,
+        "task_definition_sha256": _definition_sha256(task),
+        "ledger_sha256": file_sha256(ledger_path) if ledger_path.exists() else None,
         "model_requested": config.model,
         "task_cost_cap_usd": max_cost_usd,
         "statement_sha256": task.statement_sha256,
         "verifier_ref": task.verifier_ref,
         "status": STATUS_HARNESS_ERROR,
         "verifier_verdict": None,
+        "oracle_pass": None,
+        "telemetry_complete": False,
+        "cost_accounting_status": protocol.COST_ACCOUNTING_INCONCLUSIVE,
         "outcome": protocol.OUTCOME_INCONCLUSIVE,
         "steps": 0,
         "cost_basis": protocol.COST_BASIS_UNKNOWN,
@@ -557,6 +579,8 @@ def harness_error_report(task: BatchTask, run_dir: Path, exc: BaseException, con
     report["unmeasured"] = {k: reason for k in report
                               if k.startswith("total_") or k in ("failed_attempt_count", "tokens_lower_bound")}
     report["unmeasured"]["verifier_verdict"] = "verification not reached"
+    if report["ledger_sha256"] is None:
+        report["unmeasured"]["ledger_sha256"] = "ledger file was not created before the harness error"
     report["patch_stats"] = None
     report["unmeasured"]["patch_stats"] = reason
     if in_flight:
@@ -572,6 +596,10 @@ def _brief(report: dict[str, Any], leak_clean: bool) -> dict[str, Any]:
         "family": report["family"],
         "status": report["status"],
         "verifier_verdict": report["verifier_verdict"],
+        "oracle_pass": report["oracle_pass"],
+        "telemetry_complete": report["telemetry_complete"],
+        "cost_accounting_status": report["cost_accounting_status"],
+        "ledger_sha256": report["ledger_sha256"],
         "outcome": report["outcome"],
         "steps": report["steps"],
         "total_tokens": report["total_tokens"],
@@ -848,6 +876,11 @@ def summarize(runs: list[dict[str, Any]], *, planned: int, config: BatchConfig, 
         "tokens_lower_bound": tokens_lb,
         "total_cost_usd": total_cost,
         "cost_basis": protocol.run_cost_basis([r["cost_basis"] for r in runs]),
+        # v4, regra a: INCONCLUSIVE de custo é contado à parte; oracle_pass não muda.
+        "cost_accounting_status_counts": {
+            k: sum(1 for r in runs if r["cost_accounting_status"] == k)
+            for k in (protocol.COST_ACCOUNTING_MEASURED, protocol.COST_ACCOUNTING_INCONCLUSIVE)
+        },
         "total_wall_clock_ms": totals["total_wall_clock_ms"],
         "total_output_tokens": totals["total_output_tokens"],
         "total_uncached_input_tokens": totals["total_uncached_input_tokens"],
@@ -875,7 +908,7 @@ LlmFactory = Callable[[BatchTask], Any]
 
 
 def run_batch(tasks: Sequence[BatchTask], outdir: Path, *, config: BatchConfig, make_llm: LlmFactory,
-              secret: str | None) -> dict[str, Any]:
+              secret: str | None, integrity_validated: bool = False) -> dict[str, Any]:
     """Executa ``tasks`` em ordem. Devolve o resumo (também gravado em ``batch-summary.json``).
 
     ``secret``: valor da chave (só em memória, nunca gravado). ``None`` desliga a varredura de vazamento.
@@ -921,6 +954,12 @@ def run_batch(tasks: Sequence[BatchTask], outdir: Path, *, config: BatchConfig, 
             "total_tasks", "executed", "aborted", "outcome_counts", "verifier_verdict_counts", "total_tokens",
             "total_cost_usd", "pass_rate")}})
 
+    from dv_harness.task_integrity import dataset_fingerprint  # import tardio: task_integrity importa batch
+
+    summary["ledger_sha256"] = file_sha256(outdir / "batch-ledger.jsonl")  # bytes exatos, ledger já fechado
+    summary["dataset_sha256"] = dataset_fingerprint(tasks)  # v4, regra d: rastreia o lote até o snapshot exato
+    summary["integrity_validated"] = integrity_validated  # True somente quando o gate pré-lote passou
+
     batch_leaks = scan_for_secret(outdir, secret_bytes) if secret_bytes else []
     summary["leak_scan"] = {"performed": secret_bytes is not None,
                             "clean": (not batch_leaks) if secret_bytes else None,
@@ -942,7 +981,8 @@ def ladder_step_runner(task: BatchTask, make_llm: Callable[[Any], Any], config: 
     def run_step(rung: Any, workspace: Path, bash_logs: Path, cap_usd: float) -> StepResult:
         step_config = dataclasses.replace(config, model=rung.model, max_steps=rung.max_steps,
                                           harness_variant=rung.harness_variant)
-        with RunLedger(bash_logs.parent / "ledger.jsonl") as ledger:
+        ledger_path = bash_logs.parent / "ledger.jsonl"
+        with RunLedger(ledger_path) as ledger:
             result = run_agent_loop(task, workspace, make_llm(rung), step_config, max_cost_usd=cap_usd,
                                     ledger=ledger, bash_logs=bash_logs)
         known = [call.cost_usd for call in result.calls if call.cost_usd is not None]
@@ -951,6 +991,8 @@ def ladder_step_runner(task: BatchTask, make_llm: Callable[[Any], Any], config: 
             cost_lower_bound_usd=sum(known) if known else None,
             tokens_lower_bound=result.tokens_lower_bound,
             wall_clock_ms=int(result.total_wall_clock_ms or 0),
+            telemetry_complete=result.telemetry_complete,
+            ledger_sha256=file_sha256(ledger_path),
         )
 
     return run_step

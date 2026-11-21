@@ -15,8 +15,10 @@ Este módulo não chama LLM nem ferramentas. Só define vocabulário e a funçã
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import Any
 
-CONTRACT_ID = "p1-run-accounting-v3"  # contrato vigente (ver experiments/p1/run-accounting-contract-v3.json)
+CONTRACT_ID = "p1-run-accounting-v4"  # contrato vigente (ver experiments/p1/run-accounting-contract-v4.json)
+CONTRACT_ID_V3 = "p1-run-accounting-v3"  # superado por v4; mantido para evidência anterior
 CONTRACT_ID_V2 = "p1-run-accounting-v2"  # mantido sem alteração para evidência anterior
 METRIC_NAME = "CORE_TOKENS_PARTIAL"
 
@@ -104,6 +106,35 @@ def run_cost_basis(call_bases: list[str]) -> str:
     if all(b == COST_BASIS_ZERO for b in call_bases):
         return COST_BASIS_ZERO
     return COST_BASIS_PRICED
+
+
+# v4, regra a: telemetria é uma dimensão independente do veredito do oráculo.
+# Baldes obrigatórios por chamada (contrato v4, required_buckets).
+TELEMETRY_REQUIRED_BUCKETS: tuple[str, ...] = ("prompt_tokens", "completion_tokens", "total_tokens", "cost_usd")
+COST_ACCOUNTING_MEASURED = "MEASURED"
+COST_ACCOUNTING_INCONCLUSIVE = "INCONCLUSIVE"
+
+
+def telemetry_complete(calls: Iterable[Any]) -> bool:
+    """True quando todos os baldes obrigatórios de todas as chamadas foram medidos.
+
+    Uma chamada sem os quatro baldes, ou com tentativa cujo uso não foi medido (``attempt_usage_complete``
+    falso), torna o run incompleto. Zero chamadas é não medido, pela mesma regra de ``run_cost_basis``.
+    Esta função nunca lê o veredito do oráculo: é ortogonal ao outcome.
+    """
+    materialized = list(calls)
+    if not materialized:
+        return False
+    return all(
+        all(getattr(c, bucket) is not None for bucket in TELEMETRY_REQUIRED_BUCKETS)
+        and bool(c.attempt_usage_complete)
+        for c in materialized
+    )
+
+
+def cost_accounting_status(complete: bool) -> str:
+    """MEASURED quando a telemetria está completa; INCONCLUSIVE caso contrário (nunca descartado)."""
+    return COST_ACCOUNTING_MEASURED if complete else COST_ACCOUNTING_INCONCLUSIVE
 
 
 def is_false_finish(status: str, outcome: str | None) -> bool:

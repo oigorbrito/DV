@@ -169,6 +169,7 @@ class ToolEvent:
     wall_clock_ms: float | None  # None para submit, que não é executado por ferramenta
     failure_kind: str = protocol.FAILURE_OK  # OK | DOMAIN_FAILURE | PROTOCOL_ERROR
     timed_out: bool = False
+    arguments_sha256: str = ""  # digest da forma canônica dos argumentos; nunca os argumentos em si
 
 
 @dataclass
@@ -198,6 +199,7 @@ class AgentResult:
     calls: list[CallRecord] = field(default_factory=list)
     tool_events: list[ToolEvent] = field(default_factory=list)
     partitions: dict[str, int | None] = field(default_factory=dict)
+    telemetry_complete: bool = False  # v4, regra a: independente do oráculo; False se não medido
     metric: str = protocol.METRIC_NAME
     core_tokens_partial: int | None = None
     outcome: str | None = None
@@ -278,6 +280,11 @@ def _canonical_arguments(arguments: str) -> str:
                           separators=(",", ":"), ensure_ascii=False)
     except (json.JSONDecodeError, TypeError):
         return arguments.strip()
+
+
+def tool_arguments_sha256(arguments: str) -> str:
+    """SHA-256 da forma canônica dos argumentos (v4, GAP-1). Mesma chave de igualdade do doom loop."""
+    return hashlib.sha256(_canonical_arguments(arguments).encode("utf-8")).hexdigest()
 
 
 class DoomLoopTracker:
@@ -487,6 +494,7 @@ class AgentLoop:
             wall_clock_ms=elapsed,
             failure_kind=dispatch.kind,
             timed_out=dispatch.timed_out,
+            arguments_sha256=tool_arguments_sha256(call.arguments),
         )
         return dispatch, event, elapsed
 
@@ -573,6 +581,7 @@ class AgentLoop:
                 c.cost_basis if c.attempt_usage_complete else protocol.COST_BASIS_UNKNOWN for c in calls
             ]),
             zero_priced_calls=sum(1 for c in calls if c.cost_basis == protocol.COST_BASIS_ZERO),
+            telemetry_complete=protocol.telemetry_complete(calls),
             chars_saved_by_masking=state.chars_saved,
             messages=state.messages,
             error=error,
@@ -772,6 +781,7 @@ def _submit_event(call_index: int, event_no: int, call: ToolCall, observation: s
         truncated=False,
         wall_clock_ms=None,
         failure_kind=kind,
+        arguments_sha256=tool_arguments_sha256(call.arguments),
     )
 
 
