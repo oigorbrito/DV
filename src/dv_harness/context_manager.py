@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import copy
 import json
+import posixpath
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -114,6 +115,55 @@ def _informative_placeholder(name: str, arguments: str, content: Any) -> str:
     return f"[Previous observation omitted for brevity: {target}, {_line_count(content)} lines]"
 
 
+def _norm_path(path: str) -> str:
+    """Forma canônica de um caminho para comparar leituras e escritas: barras normalizadas, sem ``./`` nem ``..``."""
+    return posixpath.normpath(path.replace("\\", "/"))
+
+
+def _path_argument(arguments: str) -> str | None:
+    try:
+        args = json.loads(arguments) if arguments else {}
+    except json.JSONDecodeError:
+        return None
+    path = args.get("path") if isinstance(args, dict) else None
+    return path if isinstance(path, str) else None
+
+
+def _stale_read_indices(messages: Sequence[Message], calls: dict[str, tuple[str, str]]) -> dict[int, str]:
+    """Observações ``read_file`` que antecedem uma edição ou escrita bem-sucedida do mesmo caminho.
+
+    Devolve ``{índice: caminho_como_pedido}``. Sucesso é o prefixo que a própria ferramenta grava
+    (``edited `` ou ``wrote ``). Falha começa com ``error:`` e não invalida nada. Leituras posteriores à
+    última alteração do arquivo não aparecem aqui.
+    """
+    mutations: list[tuple[int, str]] = []
+    reads: list[tuple[int, str, str]] = []
+    for index, msg in enumerate(messages):
+        content = msg.get("content")
+        if msg.get("role") != "tool" or not isinstance(content, str):
+            continue
+        name, arguments = calls.get(str(msg.get("tool_call_id")), (str(msg.get("name", "")), ""))
+        path = _path_argument(arguments)
+        if path is None:
+            continue
+        if name in ("edit_file", "write_file") and content.startswith(("edited ", "wrote ")):
+            mutations.append((index, _norm_path(path)))
+        elif name == "read_file" and not content.startswith("error:"):
+            reads.append((index, _norm_path(path), path))
+    return {
+        index: requested
+        for index, norm, requested in reads
+        if any(mut_index > index and mut_path == norm for mut_index, mut_path in mutations)
+    }
+
+
+def _stale_marker(requested: str) -> str:
+    return (
+        f"[Stale observation invalidated: read_file('{requested}') predates a subsequent edit_file/write_file "
+        "to this file; rely on the unified diff or call read_file again.]"
+    )
+
+
 class ContextManager:
     """Aplica Observation Masking a uma lista de mensagens.
 
@@ -141,14 +191,22 @@ class ContextManager:
         keep_from = max(0, len(observation_indices) - self.keep_recent_observations)
         to_mask = set(observation_indices[:keep_from])
 
-        calls = _calls_by_id(messages) if self.harness_variant == VARIANT_B0_PLUS else {}
+        calls = _calls_by_id(messages)  # o placeholder do b0 não o consulta; a invalidação é que é gateada
+        stale = _stale_read_indices(messages, calls) if self.harness_variant == VARIANT_B0_PLUS else {}
         prepared: list[dict[str, Any]] = []
         chars_before = 0
         chars_after = 0
         masked = 0
         for i, msg in enumerate(messages):
             new_msg = copy.deepcopy(dict(msg))
-            if i in to_mask:
+            if i in stale:  # leitura anterior a uma edição: não é mais verdade, vale sempre
+                original_len = _content_len(msg.get("content"))
+                marker = _stale_marker(stale[i])
+                new_msg["content"] = marker
+                chars_before += original_len
+                chars_after += len(marker)
+                masked += 1
+            elif i in to_mask:
                 original_len = _content_len(msg.get("content"))
                 placeholder = self._placeholder_for(msg, calls)
                 # Só mascara quando a troca economiza caracteres. Observação já menor que o

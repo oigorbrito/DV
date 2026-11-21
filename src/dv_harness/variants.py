@@ -46,6 +46,8 @@ B0_PLUS_GUIDELINES: tuple[str, ...] = (
     "Prefer edit_file over write_file to change an existing file; use write_file only for new files or complete rewrites.",
     "Use read_file and edit_file instead of cat, sed or heredocs in run_bash.",
     "When read_file reports truncation, continue with start_line set to the line number it names.",
+    "Keep edit_file old_text concise: only the lines that change plus the minimum surrounding context that "
+    "identifies a single occurrence.",
 )
 
 

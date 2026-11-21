@@ -839,3 +839,158 @@ def test_cut_between_lines_keeps_the_continuation_hint(tmp_path):
     result = ToolExecutor(ws, max_output_chars=800, harness_variant=B0_PLUS).read_file("f.txt")
     assert _re.search(r"\[Truncated: showing lines 1-3 of \d+\. Use start_line=4 to continue\.\]", result.output)
     assert "cut is inside this line" not in result.output
+
+
+# --- diagnóstico de trecho parecido, invalidação de leitura obsoleta e diretriz concisa -------
+
+from dv_harness import tool_executor as _te2  # noqa: E402
+from dv_harness.context_manager import _stale_marker  # noqa: E402
+
+_SIMILAR_FILE = [f"v{i} = {i}" for i in range(30)]
+
+
+def _write_lines(tmp_path, name, lines):
+    (tmp_path / name).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_failed_edit_suggests_closest_window_with_five_lines_of_context(tmp_path):
+    _write_lines(tmp_path, "f.py", _SIMILAR_FILE)
+    old = "v15 = 15\nv16 = " + "X" * 14 + "\nv17 = 17\n"  # linha do meio muito diferente: block_anchor recusa
+    result = _executor(tmp_path).edit_file("f.py", old, "v15 = 0\n")
+    assert result.ok is False
+    header = "old_text not found in f.py. Did you mean to match these actual lines in f.py?\n"
+    assert result.error.startswith(header)
+    window = result.error[len(header):]
+    assert "v10 = 10" in window and "v22 = 22" in window  # ±5 linhas em torno da janela v15..v17
+    assert "v9 = 9" not in window and "v23 = 23" not in window
+    assert "v15 = 15" in window and "v17 = 17" in window
+
+
+def test_closest_window_carries_no_line_number_prefix(tmp_path):
+    _write_lines(tmp_path, "f.py", _SIMILAR_FILE)
+    result = _executor(tmp_path).edit_file("f.py", "v15 = 15\nv16 = " + "X" * 14 + "\nv17 = 17\n", "v15 = 0\n")
+    window = result.error.split("\n", 1)[1]
+    assert not any(_re.match(r"^\d+\t", line) for line in window.splitlines())
+
+
+def test_failed_edit_without_a_similar_window_does_not_invent_one(tmp_path):
+    _write_lines(tmp_path, "f.py", _SIMILAR_FILE)
+    result = _executor(tmp_path).edit_file("f.py", "alpha\nbeta\ngamma\n", "delta\n")
+    assert result.error == "old_text not found in f.py"
+
+
+def test_closest_match_threshold_is_point_six_at_the_boundary():
+    below = "\n".join(["A1", "B1", "C1", "Y1", "Y2", "Y3"]) + "\n"  # razão 2*3/12 = 0.5
+    assert _te2._closest_match_window(below, "A1\nB1\nC1\nX1\nX2\nX3\n") is None
+    above = "\n".join(["A1", "B1", "C1", "D1", "Y2", "Y3"]) + "\n"  # razão 2*4/12 = 0.667
+    assert _te2._closest_match_window(above, "A1\nB1\nC1\nD1\nX2\nX3\n") is not None
+
+
+def test_failed_edit_notes_when_new_text_is_already_in_the_file(tmp_path):
+    _write_lines(tmp_path, "f.py", ["a = 1", "b = 2"])
+    result = _executor(tmp_path).edit_file("f.py", "a = 9\n", "b = 2\n")
+    assert result.ok is False
+    assert ("Note: new_text already appears in f.py; verify whether this edit was already applied."
+            in result.error)
+
+
+def test_no_note_when_new_text_is_absent_from_the_file(tmp_path):
+    _write_lines(tmp_path, "f.py", ["a = 1", "b = 2"])
+    result = _executor(tmp_path).edit_file("f.py", "a = 9\n", "c = 3\n")
+    assert "Note:" not in result.error
+
+
+def _tool_turn(call_id, name, args, content):
+    return [
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": call_id, "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}]},
+        {"role": "tool", "tool_call_id": call_id, "name": name, "content": content},
+    ]
+
+
+def _history(*turns):
+    messages = [{"role": "system", "content": "SYS"}, {"role": "user", "content": "TASK"}]
+    for turn in turns:
+        messages += turn
+    return messages
+
+
+def test_read_before_edit_is_invalidated_and_read_after_edit_is_kept():
+    msgs = _history(
+        _tool_turn("r1", "read_file", {"path": "a.py"}, "1\told = 1"),
+        _tool_turn("e1", "edit_file", {"path": "a.py", "old_text": "old = 1", "new_text": "new = 1"},
+                   "edited a.py\n--- a/a.py\n+++ b/a.py"),
+        _tool_turn("r2", "read_file", {"path": "a.py"}, "1\tnew = 1"),
+    )
+    prepared = ContextManager(keep_recent_observations=10, harness_variant=B0_PLUS).prepare(msgs).messages
+    assert prepared[3]["content"] == _stale_marker("a.py")  # leitura anterior à edição
+    assert prepared[7]["content"] == "1\tnew = 1"  # leitura posterior à edição permanece
+    assert prepared[5]["content"] == msgs[5]["content"]  # observação da própria edição intacta
+    assert prepared[0] == msgs[0] and prepared[1] == msgs[1]  # prefixo estático intacto
+
+
+def test_write_file_success_also_invalidates_earlier_reads():
+    msgs = _history(
+        _tool_turn("r1", "read_file", {"path": "a.py"}, "1\told"),
+        _tool_turn("w1", "write_file", {"path": "a.py", "content": "new"}, "wrote 3 bytes to a.py"),
+    )
+    prepared = ContextManager(keep_recent_observations=10, harness_variant=B0_PLUS).prepare(msgs).messages
+    assert prepared[3]["content"] == _stale_marker("a.py")
+
+
+def test_path_forms_are_normalised_before_comparison():
+    msgs = _history(
+        _tool_turn("r1", "read_file", {"path": "./a.py"}, "1\told"),
+        _tool_turn("e1", "edit_file", {"path": "sub/../a.py", "old_text": "o", "new_text": "n"}, "edited a.py"),
+    )
+    prepared = ContextManager(keep_recent_observations=10, harness_variant=B0_PLUS).prepare(msgs).messages
+    assert prepared[3]["content"] == _stale_marker("./a.py")
+
+
+def test_edit_of_another_file_does_not_invalidate_a_read():
+    msgs = _history(
+        _tool_turn("r1", "read_file", {"path": "a.py"}, "1\told"),
+        _tool_turn("e1", "edit_file", {"path": "b.py", "old_text": "o", "new_text": "n"}, "edited b.py"),
+    )
+    prepared = ContextManager(keep_recent_observations=10, harness_variant=B0_PLUS).prepare(msgs).messages
+    assert prepared[3]["content"] == "1\told"
+
+
+def test_failed_edit_does_not_invalidate_a_read():
+    msgs = _history(
+        _tool_turn("r1", "read_file", {"path": "a.py"}, "1\told"),
+        _tool_turn("e1", "edit_file", {"path": "a.py", "old_text": "x", "new_text": "y"},
+                   "error: old_text not found in a.py"),
+    )
+    prepared = ContextManager(keep_recent_observations=10, harness_variant=B0_PLUS).prepare(msgs).messages
+    assert prepared[3]["content"] == "1\told"
+
+
+def test_b0_never_invalidates_reads():  # invariância do b0
+    msgs = _history(
+        _tool_turn("r1", "read_file", {"path": "a.py"}, "1\told = 1"),
+        _tool_turn("e1", "edit_file", {"path": "a.py", "old_text": "old = 1", "new_text": "new = 1"},
+                   "edited a.py"),
+    )
+    prepared = ContextManager(keep_recent_observations=10).prepare(msgs).messages
+    assert prepared[3]["content"] == "1\told = 1"
+
+
+def test_b0_edit_failure_message_is_the_short_original(tmp_path):  # invariância do b0
+    _write_lines(tmp_path, "f.py", _SIMILAR_FILE)
+    result = ToolExecutor(tmp_path).edit_file("f.py", "v15 = 15\nv16 = " + "X" * 14 + "\nv17 = 17\n", "v15 = 0\n")
+    assert result.error == "old_text not found in f.py"
+    _write_lines(tmp_path, "g.py", ["a = 1", "b = 2"])
+    noted = ToolExecutor(tmp_path).edit_file("g.py", "a = 9\n", "b = 2\n")
+    assert noted.error == "old_text not found in g.py"
+
+
+def test_stale_marker_text_is_exact():
+    assert _stale_marker("a.py") == (
+        "[Stale observation invalidated: read_file('a.py') predates a subsequent edit_file/write_file "
+        "to this file; rely on the unified diff or call read_file again.]"
+    )
+
+
+def test_b0_plus_guidelines_include_the_concise_old_text_rule():
+    assert any("concise" in line and "old_text" in line for line in _variants.B0_PLUS_GUIDELINES)

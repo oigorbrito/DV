@@ -400,6 +400,44 @@ _STAGES: tuple[tuple[str, Any], ...] = (
 )
 
 
+CLOSEST_MATCH_THRESHOLD = 0.6  # aider editblock_coder.py:602 (find_similar_lines)
+CLOSEST_MATCH_CONTEXT = 5  # linhas de contexto antes e depois da janela (aider usa N = 5)
+
+
+def _closest_match_window(body: str, old: str) -> str | None:
+    """Janela de linhas do arquivo mais parecida com ``old`` (como aider find_similar_lines), ou ``None``.
+
+    Compara janelas do mesmo tamanho de ``old`` com ``SequenceMatcher``. Só devolve uma janela se a razão
+    atingir o limiar. A janela sai com ``CLOSEST_MATCH_CONTEXT`` linhas de contexto antes e depois.
+    """
+    search = old.splitlines()
+    lines = body.splitlines()
+    size = len(search)
+    if not search or size > len(lines):
+        return None
+    best_ratio, best_start = 0.0, -1
+    for start in range(len(lines) - size + 1):
+        ratio = difflib.SequenceMatcher(None, search, lines[start:start + size]).ratio()
+        if ratio > best_ratio:
+            best_ratio, best_start = ratio, start
+    if best_start < 0 or best_ratio < CLOSEST_MATCH_THRESHOLD:
+        return None
+    first = max(0, best_start - CLOSEST_MATCH_CONTEXT)
+    last = min(len(lines), best_start + size + CLOSEST_MATCH_CONTEXT)
+    return "\n".join(lines[first:last])
+
+
+def _not_found_message(body: str, old: str, new: str, path: str) -> str:
+    """Mensagem de ``old_text`` não encontrado: pista de trecho parecido e aviso de ``new_text`` já presente."""
+    message = f"old_text not found in {path}"
+    window = _closest_match_window(body, old)
+    if window is not None:
+        message += f". Did you mean to match these actual lines in {path}?\n{window}"
+    if new.strip() and new in body:
+        message += f"\nNote: new_text already appears in {path}; verify whether this edit was already applied."
+    return message
+
+
 def _apply_edit_with_fallback(text: str, old_text: str, new_text: str, path: str
                               ) -> tuple[str | None, str | None, ToolResult | None]:
     """b0_plus: cadeia de 7 estágios. Cada estágio exige exatamente um match.
@@ -421,7 +459,7 @@ def _apply_edit_with_fallback(text: str, old_text: str, new_text: str, path: str
             if updated == text:
                 raise ValueError("No changes applied: replacement produces identical content.")
             return updated, name, None
-    return None, None, ToolResult(ok=False, error=f"old_text not found in {path}")
+    return None, None, ToolResult(ok=False, error=_not_found_message(body, old, new, path))
 
 
 def _ambiguous(count: int, stage: str, path: str) -> ToolResult:

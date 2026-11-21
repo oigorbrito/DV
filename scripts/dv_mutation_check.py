@@ -444,6 +444,27 @@ MUTANTS: tuple[Mutant, ...] = (
            "        if self.harness_variant != VARIANT_B0_PLUS or self.full_output_dir is None:",
            "        if self.full_output_dir is None:",
            "b0 gains read access to the full output directory (default mode no longer isolated)", T_B0_PLUS),
+    # --- trecho parecido (limiar 0.6), invalidacao de leitura obsoleta, isolamento do b0 ---
+    Mutant("M95", f"{SRC}/tool_executor.py",
+           "CLOSEST_MATCH_THRESHOLD = 0.6",
+           "CLOSEST_MATCH_THRESHOLD = 0.5",
+           "closest-match hint accepts windows below the aider threshold (0.6)", T_B0_PLUS),
+    Mutant("M96", f"{SRC}/tool_executor.py",
+           "    first = max(0, best_start - CLOSEST_MATCH_CONTEXT)",
+           "    first = best_start",
+           "closest-match window drops the five lines of context before the match", T_B0_PLUS),
+    Mutant("M97", f"{SRC}/tool_executor.py",
+           "    if new.strip() and new in body:",
+           "    if False:",
+           "no note when new_text is already in the file (duplicate edit goes unnoticed)", T_B0_PLUS),
+    Mutant("M98", f"{SRC}/context_manager.py",
+           "for index, norm, requested in reads",
+           "for index, norm, requested in []",
+           "stale read_file observations are never invalidated after an edit or write", T_B0_PLUS),
+    Mutant("M99", f"{SRC}/context_manager.py",
+           "        stale = _stale_read_indices(messages, calls) if self.harness_variant == VARIANT_B0_PLUS else {}",
+           "        stale = _stale_read_indices(messages, calls)",
+           "b0 invalidates stale reads (default mode no longer isolated)", T_B0_PLUS),
 )
 
 
