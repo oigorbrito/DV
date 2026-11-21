@@ -2,14 +2,49 @@
 
 ## Verificação local canônica
 
+Dependências fixadas (inclui `pytest`): `python -m pip install -r requirements-dv-harness.txt`.
+
 ```bash
 python scripts/harness.py
-python -m unittest discover -s tests -v
+python -m pytest tests -v
+cd tools && python -m unittest discover -p "test_*.py" -v
 ```
+
+`python -m unittest discover -s tests` **não** é a suíte completa: ele só coleta `TestCase` (apenas `test_harness.py`). Os módulos pytest de `tests/` só rodam com `pytest`.
+
+## Plataforma
+
+| Item | Linux/CI | Windows | WSL |
+|---|---|---|---|
+| `pytest tests` | executa tudo | executa tudo (22 testes POSIX pulados) | executa tudo |
+| `run_bash`, `killpg` (timeout sem órfãos) | sim | não (`shell=True` → `cmd.exe`; só mata o shell) | sim |
+| Canário I3b (`scripts/dv_canary_check.py`) | sim | não aplicável | **obrigatório** |
+| Mutação (`scripts/dv_mutation_check.py`) | sim | não aplicável | **obrigatório** |
+
+- Fins de linha: `.gitattributes` fixa `eol=lf` e `experiments/**` com `-text`, para que o sha256 do contrato v1 seja o mesmo em qualquer checkout.
 
 ## Escopo atual dos testes
 
-- `tests/test_harness.py`: testes do harness de maturidade (`scripts/harness.py`).
+- `tests/test_harness.py`: testes do harness de maturidade (`scripts/harness.py`). Coletado por `pytest tests` e por `unittest`.
+- Revisão de auditoria: `tests/test_agent_loop.py` cobre a ordem de orçamento (ferramentas não executadas após estouro), `provider_error` com totais preservados, telemetria por chamada, declaração de `unmeasured`, cache e raciocínio somados ou não medidos, e fuga de workspace pelo loop. `tests/test_tool_executor.py` cobre fuga por caminho absoluto, `..`, link simbólico e `cwd`. `tests/test_llm_client.py` cobre propagação de erro inesperado de custo e leitura de cache e latência.
+- `tests/test_agent_loop.py`: testes do Módulo 4 (`src/dv_harness/agent_loop.py`). Integra LLM mockado com `ToolExecutor` e `ContextManager` reais em `tmp_path`. Cobrem conclusão direta, ciclo multi-turno em arquivos reais, recuperação de erros, parada exata por limites, `cost_usd=None` e masking acumulado. Executar: `python -m pytest tests/test_agent_loop.py -v`.
+- `tests/test_context_manager.py`: testes do Módulo 3 (`src/dv_harness/context_manager.py`). Cobrem preservação de `system`/`user`/`assistant`, janela de observações, `tool_call_id`, não-mutação do histórico e contagem de caracteres. Executar: `python -m pytest tests/test_context_manager.py -v`.
+- Protocolo v2 (`tests/test_protocol.py`, `tests/test_ledger.py`): tabela de outcome exaustiva, bases de custo, conformidade entre contrato JSON v2 e código, e hash do v1. Ledger: durabilidade, reconciliação de chamadas em voo, fsync.
+- Testes de propriedade (`tests/test_properties.py`, hypothesis): I1 conservação da contabilidade, I2 imutabilidade do log frente ao masking, I3 confinamento sem exceção e sem efeito externo, I4 totalidade dos estados, I5 nenhum efeito colateral após quebra de orçamento, I6 ausência de sentinelas.
+- `tests/test_batch_run.py`: lote multi-tarefa (`src/dv_harness/batch.py`, `scripts/dv_batch_run.py`) com `ScriptedLLM`, sem rede. Cobre a validade das 10 tarefas F1–F6 (oráculo reprova o estado inicial e aprova a referência), lote N=10 com SOLVED/FAILURE/provider_error, nulos com motivo (contrato v3), classificação S0, teto do lote, vazamento, gate de credencial, `--limit`, `--fail-fast` e `--help`. Executar: `python -m pytest tests/test_batch_run.py -v`.
+- `tests/test_b0_plus_variant.py`: variante opt-in `b0_plus` e invariância do `b0`. Cobre edição nos 3 estágios, unicidade, terminação CRLF/sem quebra final, diff `n=4`, truncamento 20/80 com `raw_output`/SHA íntegros, placeholders determinísticos, disparo do doom loop na 3ª chamada idêntica, e o `b0` inalterado. Executar: `python -m pytest tests/test_b0_plus_variant.py -v`.
+- `tests/test_naive_laddering.py`: Naive Laddering guiado por oráculo externo (`src/dv_harness/laddering.py`) com mocks determinísticos, sem rede. Cobre resolução no Rung 0, falso positivo com escalonamento e workspace limpo, falha nos dois degraus, corte por orçamento global, teto por degrau, status não escalável, INCONCLUSIVE, parser e validação da política, adaptador sobre o AgentLoop e o gate da CLI `scripts/dv_ladder_run.py`. Executar: `python -m pytest tests/test_naive_laddering.py -v`.
+- `tests/test_ablation_analysis.py`: análise pareada e bootstrap do wp08 (`src/dv_harness/ablation_analysis.py`, CLI `scripts/dv_analyze_ablation.py`). Fixtures sintéticas com seed fixa: determinismo, rejeição de lote misturado, H1 e H2 promovidos e rejeitados (margem, custo, teto), segregação de INCONCLUSIVE, CLI e um teste de ponta a ponta com artefatos reais. Executar: `python -m pytest tests/test_ablation_analysis.py -v`.
+- `tests/test_task_integrity.py`: validador determinístico de integridade (`src/dv_harness/task_integrity.py`, CLI `scripts/dv_validate_tasks.py`). Cobre tarefa íntegra e impressões digitais determinísticas, `.git` e marcadores de gabarito expostos, vazamento do oráculo, gate pré-patch (o oráculo deve reprovar), gate pós-patch de referência (deve aprovar), manifesto com `reference_files`, CLI e gates integrados ao laddering e ao lote (`--validate-tasks`). Executar: `python -m pytest tests/test_task_integrity.py -v`.
+- Contagem de referência de `pytest tests` neste branch: Windows 607 passed, 23 skipped; WSL 629 passed, 1 skipped.
+- Verificação por mutação (POSIX/WSL): `python scripts/dv_mutation_check.py --workdir <dir> --json <arquivo>`. Roda 114 mutantes (M01–M114) em cópia descartável e exige linha de base verde. Mutante morto significa que algum teste falhou. Resultado neste branch (WSL, venv fora do repositório): 105 mutantes, 104 mortos, 1 sobrevivente pré-existente (já presente em `8cc338d`, não corrigido aqui): M07 (`max_steps` conta chamadas falhas). M50–M57 cobrem a montagem `/app`, `PYTHONPATH` e `--pass-env`. M58–M59 cobrem o timeout por requisição (repasse ao `litellm` e retentabilidade). M60–M66 cobrem o lote (null com motivo, parada por vazamento, oráculo fora do workspace, `--fail-fast`, teto do lote, S0 com telemetria limitada, erro de harness registrado por tarefa). M67 (orçamento pelo limite inferior: retry recuperado não aborta o turno), M68 (`pass_rate` sem INCONCLUSIVE), M69 (`usage_details`) e M70 (patch stats). M111–M114 cobrem a análise wp08 (divergência de dataset_sha256, margem de não inferioridade, teto global em D, segregação de INCONCLUSIVE de custo). M106–M110 cobrem a conformidade de telemetria v4 (digest de argumentos, hash do ledger, telemetria não alterar oracle_pass, dataset_sha256). M103–M105 cobrem o validador de integridade (`.git` exposto, oráculo que passa no pré-patch, gold que o oráculo rejeita). M100–M102 cobrem a parada do laddering no oráculo externo, o bloqueio por orçamento global e a restauração de workspace limpo entre degraus. M95–M99 cobrem o limiar 0,6 do diagnóstico de trecho parecido, a janela com contexto, a dica de new_text já presente, a invalidação de leitura obsoleta e o isolamento do b0 nessa invalidação. M89–M94 cobrem o acesso somente-leitura ao diretório de saída (leitura permitida, escrita bloqueada, traversal, symlink, b0 isolado) e o aviso de linha única longa. M79–M88 cobrem o motor nivelado (no-op, unicode, limiar do block_anchor 0.65, isolamento do b0 nos schemas, prefixo numerico, pista de continuacao, kill limitado, taskkill, escape e aparagem de bordas). M71–M78 cobrem a variante `b0_plus` (incluindo a re-indentação relativa M77–M78 e o disparo contínuo do doom loop M72/M76) (ambiguidade no fallback de `edit_file`, limiar do doom loop, isolamento do `b0` nas duas direções e a razão 20/80 do truncamento de cauda).
+- Protocolo v3 (`tests/test_protocol.py`): conformidade do contrato v3 com o código, sha256 fixo do v2 e do v1, quatro baldes de tokens, classificação de falhas e `false_finish`/`false_finish_rate`. Propriedades (`tests/test_properties.py`): só `PROTOCOL_ERROR` consecutivo atinge `error_limit`; baldes são soma só se todas as chamadas medem.
+- Wrapper de container (`tests/test_container_run.py`): argv com quotas fixas, `--network none`, timeout com `docker kill`, OOM e falha de daemon como flags de infraestrutura, ledger `infra_finished`. Repositório montado em `/app` somente leitura (`--mount type=bind,...,readonly`) e `PYTHONPATH=/app/src` por padrão. `--pass-env NAME` repassa só o nome (`-e NAME`): recusa `NAME=valor`, falha antes do docker se a variável estiver ausente do host e nunca grava o valor no argv, no dry-run ou no ledger. Usa `docker` simulado; não exige daemon. Em Git Bash (Windows), defina `MSYS_NO_PATHCONV=1` antes de passar caminhos `/app/...`: sem isso o shell reescreve o caminho antes do Python.
+- Canário de ambiente (I3b): `python scripts/dv_canary_check.py --workdir <dir>`. Exige POSIX (WSL/Linux); no Windows o script não é válido. Falso no ambiente de medição (ver ARCHITECTURE). `tests/test_canary.py` prova que o detector acusa escape e aceita um executor contido.
+- Smoke test com modelo real: `python scripts/dv_smoke_run.py --outdir <dir>` (padrão `--model claude-haiku-5-5`, `--api-key-env ANTHROPIC_API_KEY`). Alternativa: `--model gemini/gemini-2.5-flash --api-key-env GEMINI_API_KEY`. Sem a variável (ou vazia), recusa rodar com saída 2. Gate coberto por `tests/test_smoke_run.py`, sem chamada de modelo.
+- Cobertura com branch: `python -m pytest tests --cov=src/dv_harness --cov-branch --cov-report=term-missing` (com `COVERAGE_FILE` fora do repositório).
+- `tests/test_tool_executor.py`: testes do Módulo 2 (`src/dv_harness/tool_executor.py`) com `tmp_path`. Inclui medição de que o timeout não deixa processos órfãos. Testes de bash são pulados fora de POSIX. Executar: `python -m pytest tests/test_tool_executor.py -v`.
+- `tests/test_llm_client.py`: testes do Módulo 1 do harness modular (`src/dv_harness/llm_client.py`). Usa pytest e mocks, sem chamada real de API. Requer `pip install -r requirements-dv-harness.txt` e executa a partir da raiz: `python -m pytest tests/test_llm_client.py -v`.
 - `tools/test_*.py`: testes das ferramentas de pesquisa DV. Executar a partir de `tools/` (`cd tools && python -m unittest discover -p "test_*.py" -v`), porque alguns casos usam caminhos relativos (`../experiments/...`). O workflow `.github/workflows/verify.yml` executa ambos os conjuntos.
 - Workflows `wp03`–`wp07` continuam executando subconjuntos específicos por etapa.
 
@@ -19,3 +54,38 @@ python -m unittest discover -s tests -v
 - OSPS Level 3: a documentação deve explicar quando/como os testes são executados, e alterações importantes devem adicionar ou atualizar testes de acordo com a política documentada.
 
 O harness não afirma que um repositório está no Level 2/3 apenas porque este arquivo existe.
+
+## Evidência de execução em container (ajuste 3)
+
+Medida com o código desta branch, em Docker Desktop 29.9.3 (Linux), imagem `dv-harness:local`.
+Quotas em todas as execuções: `--cpus 1`, `--memory 512m` (sem swap), `--pids-limit 256`,
+`--network none`, `--cap-drop ALL`, `--read-only`, usuário não-root. Entrada: `scripts/dv_container_run.py`.
+
+| Caso | Comando (resumo) | Resultado observado | Interpretação |
+|---|---|---|---|
+| **I3b, isca somente leitura** | `--mount <ctrl>:/canary:ro` + `dv_canary_check.py --control-dir /canary` | exit 0; `I3b holds: True`; `control_dir_writable_by_this_process: False`; 5 tentativas `contained` | Nenhuma via de escape alterou a isca montada como somente leitura. |
+| I3b, contraste (isca gravável) | `--mount <ctrl>:/canary` (rw), mesmo comando | exit 1; `I3b holds: False`; 5 tentativas `ESCAPED`; `writable: True` | Prova que o detector acusa escape quando a isca é gravável. |
+| Sonda de escrita direta | `sh -c 'echo x > /canary/probe.txt'` com `:ro` | `cannot create /canary/probe.txt: Read-only file system` | A recusa vem do mount, não do comando. |
+| **Timeout** | `--timeout-s 3 -- sleep 60` | exit **124**; `timed_out: true`; `cmd_timeouts: 1`; container removido | Telemetria de infraestrutura, não falha do agente. |
+| **OOM** | `--memory 64m -- python -c "x = b'a' * 300MiB"` | exit **137**; `oom_killed: true`; container removido | `State.OOMKilled` lido antes da remoção. |
+| Docker ausente (`PATH` vazio) | `dv_container_run.py -- echo x` | exit **125**; `daemon_error: true`; sem traceback | Falha de infraestrutura tratada sem exceção não capturada. |
+
+Proteção do caminho de falha (testada em `tests/test_container_run.py`, sem daemon real):
+
+- **`timeout` seguido de falha do `docker kill`** (`TimeoutExpired`, `SubprocessError` ou `FileNotFoundError`): não
+  levanta exceção; a falha vai para `cleanup_error`; o `finally` ainda tenta `docker inspect` e `docker rm -f`;
+  o exit é **125**, nunca 124 (o timeout não foi garantido).
+- **Falha do `docker inspect`** (exceção, `returncode != 0` ou saída inesperada): `oom_killed` fica `None`
+  (não medido, nunca `False`), `cleanup_error` registra o motivo e o exit é **125**, nunca 0.
+- **Falha do `docker rm -f`**: `cleanup_error` e exit 125.
+
+Em todos os casos, `docker ps -a --filter name=dv-run-` retornou 0 após a execução (limpeza garantida
+no `finally`). Os testes automatizados correspondentes estão em `tests/test_container_run.py`
+(inclui falha só na limpeza, que vira exit 125) e `tests/test_canary.py` (modo `--control-dir`).
+
+**Limite do I3b com isca somente leitura.** O resultado `True` mede que o controle está fora do
+alcance de escrita do agente. Não mede que `run_bash` esteja confinado: dentro de `/work` (rw), o agente
+ainda pode escrever à vontade. O benchmark exige os dois fatos separados.
+
+Para reproduzir: `python scripts/dv_canary_check.py --provision <dir-host-fora-do-repo>`, depois o
+comando de container da tabela acima.

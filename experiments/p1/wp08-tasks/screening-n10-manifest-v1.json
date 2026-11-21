@@ -1,0 +1,135 @@
+{
+  "schema_id": "dv-batch-manifest-v1",
+  "suite_id": "screening-n10",
+  "tasks": [
+    {
+      "task_id": "f1-greet",
+      "family": "F1",
+      "statement": "greet.py: greet(name) must return 'Hello, <name>!'. Use the tools to read, edit and run. When the fix is done, call submit with a one-sentence answer describing the change. The verifier is hidden from you.",
+      "files": {
+        "greet.py": "def greet(name):\n    return \"Hello \" + name\n"
+      },
+      "oracle": "from greet import greet\n\nassert greet('Ana') == 'Hello, Ana!'\nassert greet('') == 'Hello, !'\nprint('OK')\n",
+      "reference_files": {
+        "greet.py": "def greet(name):\n    return \"Hello, \" + name + \"!\"\n"
+      }
+    },
+    {
+      "task_id": "f1-clamp",
+      "family": "F1",
+      "statement": "clamp.py: clamp(x, lo, hi) must limit x to the closed interval [lo, hi]. Use the tools to read, edit and run. When the fix is done, call submit with a one-sentence answer describing the change. The verifier is hidden from you.",
+      "files": {
+        "clamp.py": "def clamp(x, lo, hi):\n    return max(lo, min(x, lo))\n"
+      },
+      "oracle": "from clamp import clamp\n\nassert clamp(5, 0, 3) == 3\nassert clamp(-1, 0, 3) == 0\nassert clamp(2, 0, 3) == 2\nprint('OK')\n",
+      "reference_files": {
+        "clamp.py": "def clamp(x, lo, hi):\n    return max(lo, min(x, hi))\n"
+      }
+    },
+    {
+      "task_id": "f2-pricing",
+      "family": "F2",
+      "statement": "shop.cart.total(items) must return the sum of the items plus SERVICE_FEE from shop/fees.py, rounded to 2 decimals. The defects are in shop/fees.py and shop/cart.py. Use the tools to read, edit and run. When the fix is done, call submit with a one-sentence answer describing the change. The verifier is hidden from you.",
+      "files": {
+        "shop/__init__.py": "",
+        "shop/fees.py": "SERVICE_FEE = 0.1\n\n\ndef apply_fee(value):\n    return value\n",
+        "shop/cart.py": "from shop.fees import apply_fee\n\n\ndef total(items):\n    return sum(items)\n"
+      },
+      "oracle": "from shop.cart import total\nfrom shop.fees import apply_fee\n\nassert total([10, 20]) == 33.0\nassert total([]) == 0.0\nassert apply_fee(100) == 110.0\nprint('OK')\n",
+      "reference_files": {
+        "shop/fees.py": "SERVICE_FEE = 0.1\n\n\ndef apply_fee(value):\n    return round(value * (1 + SERVICE_FEE), 2)\n",
+        "shop/cart.py": "from shop.fees import apply_fee\n\n\ndef total(items):\n    return apply_fee(sum(items))\n"
+      }
+    },
+    {
+      "task_id": "f2-grades",
+      "family": "F2",
+      "statement": "grades.report.letters(scores) must return one letter per score, in order, using grades.scale. A score of exactly 80 is a B. The defects are in grades/scale.py and grades/report.py. Use the tools to read, edit and run. When the fix is done, call submit with a one-sentence answer describing the change. The verifier is hidden from you.",
+      "files": {
+        "grades/__init__.py": "",
+        "grades/scale.py": "def to_letter(score):\n    if score >= 90:\n        return 'A'\n    if score > 80:\n        return 'B'\n    if score >= 70:\n        return 'C'\n    return 'F'\n",
+        "grades/report.py": "from grades.scale import to_letter\n\n\ndef letters(scores):\n    return [to_letter(s) for s in scores[1:]]\n"
+      },
+      "oracle": "from grades.report import letters\nfrom grades.scale import to_letter\n\nassert to_letter(80) == 'B'\nassert to_letter(90) == 'A'\nassert to_letter(79) == 'C'\nassert letters([95, 80, 70, 10]) == ['A', 'B', 'C', 'F']\nprint('OK')\n",
+      "reference_files": {
+        "grades/scale.py": "def to_letter(score):\n    if score >= 90:\n        return 'A'\n    if score >= 80:\n        return 'B'\n    if score >= 70:\n        return 'C'\n    return 'F'\n",
+        "grades/report.py": "from grades.scale import to_letter\n\n\ndef letters(scores):\n    return [to_letter(s) for s in scores]\n"
+      }
+    },
+    {
+      "task_id": "f3-percent",
+      "family": "F3",
+      "statement": "pct.py: implement parse_percent(text). '45%' -> 0.45, '45' -> 0.45, ' 12 % ' -> 0.12. Empty input, a lone '%', or non-numeric text raises ValueError. The current function is a stub. Use the tools to read, edit and run. When the fix is done, call submit with a one-sentence answer describing the change. The verifier is hidden from you.",
+      "files": {
+        "pct.py": "def parse_percent(text):\n    raise NotImplementedError\n"
+      },
+      "oracle": "from pct import parse_percent\n\nassert parse_percent('45%') == 0.45\nassert parse_percent('45') == 0.45\nassert parse_percent(' 12 % ') == 0.12\nfor bad in ['', '%', 'abc', '1x%']:\n    try:\n        parse_percent(bad)\n    except ValueError:\n        continue\n    raise AssertionError('expected ValueError for ' + repr(bad))\nprint('OK')\n",
+      "reference_files": {
+        "pct.py": "def parse_percent(text):\n    value = text.strip()\n    if value.endswith('%'):\n        value = value[:-1].strip()\n    if not value:\n        raise ValueError('empty percent')\n    return float(value) / 100\n"
+      }
+    },
+    {
+      "task_id": "f3-bytes",
+      "family": "F3",
+      "statement": "sizes.py: implement human_size(n) for non-negative integers with base 1024. Below 1024 return '<n> B'. Otherwise one decimal in the largest unit among KB, MB, GB (1536 -> '1.5 KB', 2097152 -> '2.0 MB'). The current function is a stub. Use the tools to read, edit and run. When the fix is done, call submit with a one-sentence answer describing the change. The verifier is hidden from you.",
+      "files": {
+        "sizes.py": "def human_size(n):\n    return str(n)\n"
+      },
+      "oracle": "from sizes import human_size\n\nassert human_size(0) == '0 B'\nassert human_size(512) == '512 B'\nassert human_size(1536) == '1.5 KB'\nassert human_size(2 * 1024 * 1024) == '2.0 MB'\nassert human_size(3 * 1024 ** 3) == '3.0 GB'\nprint('OK')\n",
+      "reference_files": {
+        "sizes.py": "def human_size(n):\n    if n < 1024:\n        return f'{n} B'\n    units = ['KB', 'MB', 'GB']\n    value = float(n)\n    unit = None\n    for unit in units:\n        value /= 1024\n        if value < 1024 or unit == units[-1]:\n            break\n    return f'{value:.1f} {unit}'\n"
+      }
+    },
+    {
+      "task_id": "f4-leap",
+      "family": "F4",
+      "statement": "tests/test_leap.py has one weak test. Complete it so it passes for a correct is_leap(year) and fails for implementations that ignore the century rule or the 400 rule. Use the tools to read, edit and run. When the fix is done, call submit with a one-sentence answer describing the change. The verifier is hidden from you.",
+      "files": {
+        "leap.py": "def is_leap(year):\n    return (year % 4 == 0 and year % 100 != 0) or year % 400 == 0\n",
+        "tests/test_leap.py": "from leap import is_leap\n\nassert is_leap(2024) is True\nprint('OK')\n"
+      },
+      "oracle": "import os, pathlib, subprocess, sys, tempfile\nWS = pathlib.Path(os.environ[\"PYTHONPATH\"])\nTEST = (WS / \"tests\" / \"test_leap.py\").read_text(encoding=\"utf-8\")\nIMPLS = {\n    \"correct\": \"def is_leap(year):\\n    return (year % 4 == 0 and year % 100 != 0) or year % 400 == 0\\n\",\n    \"ignores_century\": \"def is_leap(year):\\n    return year % 4 == 0\\n\",\n    \"ignores_400\": \"def is_leap(year):\\n    return year % 4 == 0 and year % 100 != 0\\n\",\n}\ndef run(src):\n    d = pathlib.Path(tempfile.mkdtemp())\n    (d / \"leap.py\").write_text(src, encoding=\"utf-8\")\n    (d / \"test_leap.py\").write_text(TEST, encoding=\"utf-8\")\n    env = {\"PATH\": os.environ.get(\"PATH\", \"\"), \"PYTHONDONTWRITEBYTECODE\": \"1\"}\n    if \"SYSTEMROOT\" in os.environ:\n        env[\"SYSTEMROOT\"] = os.environ[\"SYSTEMROOT\"]\n    return subprocess.run([sys.executable, str(d / \"test_leap.py\")], cwd=d, env=env,\n                          capture_output=True, text=True, timeout=20).returncode\nassert run(IMPLS[\"correct\"]) == 0, \"test file must pass on a correct is_leap\"\nassert run(IMPLS[\"ignores_century\"]) != 0, \"mutant survives: ignores_century\"\nassert run(IMPLS[\"ignores_400\"]) != 0, \"mutant survives: ignores_400\"\nprint(\"OK\")\n",
+      "reference_files": {
+        "tests/test_leap.py": "from leap import is_leap\n\ncases = {2024: True, 2023: False, 1900: False, 2000: True, 1996: True}\nfor year, expected in cases.items():\n    assert is_leap(year) is expected, year\nprint('OK')\n"
+      }
+    },
+    {
+      "task_id": "f4-roman",
+      "family": "F4",
+      "statement": "tests/test_roman.py has one weak test. Complete it so it passes for a correct to_roman(n) (1..3999) and fails for implementations that drop subtractive pairs, mishandle 900, or cannot produce thousands. Use the tools to read, edit and run. When the fix is done, call submit with a one-sentence answer describing the change. The verifier is hidden from you.",
+      "files": {
+        "roman.py": "def to_roman(n):\n    table = [(1000, 'M'), (900, 'CM'), (500, 'D'), (400, 'CD'), (100, 'C'), (90, 'XC'), (50, 'L'), (40, 'XL'), (10, 'X'), (9, 'IX'), (5, 'V'), (4, 'IV'), (1, 'I')]\n    out = ''\n    for value, symbol in table:\n        while n >= value:\n            out += symbol\n            n -= value\n    return out\n",
+        "tests/test_roman.py": "from roman import to_roman\n\nassert to_roman(3) == 'III'\nprint('OK')\n"
+      },
+      "oracle": "import os, pathlib, subprocess, sys, tempfile\nWS = pathlib.Path(os.environ[\"PYTHONPATH\"])\nTEST = (WS / \"tests\" / \"test_roman.py\").read_text(encoding=\"utf-8\")\nTABLE = [(1000, 'M'), (900, 'CM'), (500, 'D'), (400, 'CD'), (100, 'C'), (90, 'XC'), (50, 'L'), (40, 'XL'), (10, 'X'), (9, 'IX'), (5, 'V'), (4, 'IV'), (1, 'I')]\nSUBTRACTIVE = {(900, \"CM\"), (400, \"CD\"), (90, \"XC\"), (40, \"XL\"), (9, \"IX\"), (4, \"IV\")}\ndef impl(table):\n    return (\"def to_roman(n):\\n    table = \" + repr(table) + \"\\n    out = ''\\n\"\n            \"    for value, symbol in table:\\n        while n >= value:\\n            out += symbol\\n\"\n            \"            n -= value\\n    return out\\n\")\nMUTANTS = {\n    \"no_subtractive\": [e for e in TABLE if e not in SUBTRACTIVE],\n    \"no_900\": [e for e in TABLE if e != (900, \"CM\")],\n    \"no_thousands\": [e for e in TABLE if e != (1000, \"M\")],\n}\ndef run(src):\n    d = pathlib.Path(tempfile.mkdtemp())\n    (d / \"roman.py\").write_text(src, encoding=\"utf-8\")\n    (d / \"test_roman.py\").write_text(TEST, encoding=\"utf-8\")\n    env = {\"PATH\": os.environ.get(\"PATH\", \"\"), \"PYTHONDONTWRITEBYTECODE\": \"1\"}\n    if \"SYSTEMROOT\" in os.environ:\n        env[\"SYSTEMROOT\"] = os.environ[\"SYSTEMROOT\"]\n    return subprocess.run([sys.executable, str(d / \"test_roman.py\")], cwd=d, env=env,\n                          capture_output=True, text=True, timeout=20).returncode\nassert run(impl(TABLE)) == 0, \"test file must pass on a correct to_roman\"\nfor name, table in MUTANTS.items():\n    assert run(impl(table)) != 0, \"mutant survives: \" + name\nprint(\"OK\")\n",
+      "reference_files": {
+        "tests/test_roman.py": "from roman import to_roman\n\ncases = {1: 'I', 3: 'III', 4: 'IV', 9: 'IX', 14: 'XIV', 40: 'XL', 58: 'LVIII',\n         90: 'XC', 400: 'CD', 900: 'CM', 1000: 'M', 1994: 'MCMXCIV', 3999: 'MMMCMXCIX'}\nfor number, numeral in cases.items():\n    assert to_roman(number) == numeral, (number, to_roman(number))\nprint('OK')\n"
+      }
+    },
+    {
+      "task_id": "f5-money",
+      "family": "F5",
+      "statement": "report.py: move the repeated money formatting into a helper _money(value) that both functions call (at least twice in the module). Output must remain identical. Use the tools to read, edit and run. When the fix is done, call submit with a one-sentence answer describing the change. The verifier is hidden from you.",
+      "files": {
+        "report.py": "def invoice_line(name, amount):\n    return f\"{name}: \" + f\"${amount:,.2f}\"\n\n\ndef receipt_total(amount, tax):\n    return \"TOTAL \" + f\"${amount + tax:,.2f}\"\n"
+      },
+      "oracle": "import ast\nfrom report import invoice_line, receipt_total\n\nassert invoice_line('pen', 1234.5) == 'pen: $1,234.50'\nassert receipt_total(10, 0.5) == 'TOTAL $10.50'\ntree = ast.parse(open('report.py', encoding='utf-8').read())\nassert '_money' in [n.name for n in tree.body if isinstance(n, ast.FunctionDef)]\ncalls = sum(1 for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, 'id', None) == '_money')\nassert calls >= 2, calls\nprint('OK')\n",
+      "reference_files": {
+        "report.py": "def _money(value):\n    return f\"${value:,.2f}\"\n\n\ndef invoice_line(name, amount):\n    return f\"{name}: \" + _money(amount)\n\n\ndef receipt_total(amount, tax):\n    return \"TOTAL \" + _money(amount + tax)\n"
+      }
+    },
+    {
+      "task_id": "f6-cli-config",
+      "family": "F6",
+      "statement": "cli.py must read settings.json from its own directory (not the current directory) and print the greeting 'repeat' times, one per line. --repeat N overrides the config. The current cli.py ignores both. Use the tools to read, edit and run. When the fix is done, call submit with a one-sentence answer describing the change. The verifier is hidden from you.",
+      "files": {
+        "cli.py": "import sys\n\n\ndef main(argv):\n    print(\"Hello\")\n    return 0\n\n\nif __name__ == \"__main__\":\n    sys.exit(main(sys.argv[1:]))\n",
+        "settings.json": "{\"greeting\": \"Hi\", \"repeat\": 2}\n"
+      },
+      "oracle": "import os, subprocess, sys, tempfile\nWS = os.environ[\"PYTHONPATH\"]\nCLI = os.path.join(WS, \"cli.py\")\ndef run(args):\n    p = subprocess.run([sys.executable, CLI, *args], cwd=tempfile.gettempdir(), capture_output=True,\n                       text=True, timeout=20)\n    return p.returncode, p.stdout\nrc, out = run([])\nassert rc == 0 and out == \"Hi\\nHi\\n\", (rc, out)\nrc, out = run([\"--repeat\", \"1\"])\nassert rc == 0 and out == \"Hi\\n\", (rc, out)\nprint(\"OK\")\n",
+      "reference_files": {
+        "cli.py": "import argparse\nimport json\nimport os\nimport sys\n\nHERE = os.path.dirname(os.path.abspath(__file__))\n\n\ndef main(argv):\n    with open(os.path.join(HERE, 'settings.json'), encoding='utf-8') as fh:\n        settings = json.load(fh)\n    parser = argparse.ArgumentParser()\n    parser.add_argument('--repeat', type=int, default=settings['repeat'])\n    args = parser.parse_args(argv)\n    for _ in range(args.repeat):\n        print(settings['greeting'])\n    return 0\n\n\nif __name__ == '__main__':\n    sys.exit(main(sys.argv[1:]))\n"
+      }
+    }
+  ]
+}

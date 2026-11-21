@@ -1,0 +1,705 @@
+"""Testes do Módulo 4 (AgentLoop), protocolo v2.
+
+Integração: LLM roteirizado, ToolExecutor e ContextManager reais em tmp_path, ledger real.
+Executar: python -m pytest tests/test_agent_loop.py -v
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+
+import pytest
+
+from support import ScriptedLLM, call, make_response, provider_failure, submit, tool_contents  # noqa: F401
+from dv_harness import protocol as p
+from dv_harness.agent_loop import NO_TOOL_CALL_MESSAGE, AgentLoop
+from dv_harness.context_manager import DEFAULT_PLACEHOLDER, ContextManager
+from dv_harness.ledger import RunLedger, reconcile, read_events
+from dv_harness.llm_client import AttemptRecord
+from dv_harness.tool_executor import ToolExecutor
+
+
+def make_loop(tmp_path, llm, *, keep_recent=10, error_limit=3, ledger=None):
+    return AgentLoop(llm, ToolExecutor(tmp_path), ContextManager(keep_recent_observations=keep_recent),
+                     error_limit=error_limit, ledger=ledger)
+
+
+# --- conclusão por submissão explícita ----------------------------------------------
+
+
+def test_explicit_submit_completes_with_answer(tmp_path):
+    llm = ScriptedLLM([make_response(calls=[submit("s1", "Paris")])])
+    result = make_loop(tmp_path, llm).run("Capital?", "sys")
+    assert result.status == p.STATUS_COMPLETED
+    assert result.final_answer == "Paris"
+    assert result.steps == 1
+    assert result.outcome is None  # outcome é atribuído pelo avaliador, não pelo núcleo
+    assert [e.observation for e in result.tool_events] == ["submitted"]
+
+
+def test_text_only_reply_is_a_format_error_not_completion(tmp_path):
+    llm = ScriptedLLM([
+        make_response(content="Paris"),
+        make_response(calls=[submit("s1", "Paris")]),
+    ])
+    result = make_loop(tmp_path, llm).run("Capital?", "sys")
+    assert result.status == p.STATUS_COMPLETED
+    assert result.steps == 2
+    assert any(m == {"role": "user", "content": NO_TOOL_CALL_MESSAGE} for m in result.messages)
+
+
+def test_repeated_text_only_replies_hit_error_limit(tmp_path):
+    llm = ScriptedLLM([make_response(content="still thinking")])
+    result = make_loop(tmp_path, llm, error_limit=3).run("t", "s")
+    assert result.status == p.STATUS_ERROR_LIMIT
+    assert result.steps == 3
+    assert result.final_answer == "still thinking"  # D3: último texto não vazio
+
+
+def test_invalid_submit_arguments_count_as_format_error(tmp_path):
+    llm = ScriptedLLM([
+        make_response(calls=[call("s1", "submit", {"answer": 42})]),
+        make_response(calls=[call("s2", "submit", "not-json")]),
+        make_response(calls=[call("s3", "submit", {})]),
+    ])
+    result = make_loop(tmp_path, llm, error_limit=3).run("t", "s")
+    assert result.status == p.STATUS_ERROR_LIMIT
+    assert all(e.format_error for e in result.tool_events)
+
+
+def test_error_counter_resets_on_clean_turn(tmp_path):
+    (tmp_path / "a.txt").write_text("hi\n", encoding="utf-8")
+    llm = ScriptedLLM([
+        make_response(calls=[call("b1", "nope", {})]),                       # erro 1
+        make_response(calls=[call("r1", "read_file", {"path": "a.txt"})]),   # limpo: zera
+        make_response(calls=[call("b2", "nope", {})]),                       # erro 1
+        make_response(calls=[call("b3", "nope", {})]),                       # erro 2 -> limite 2
+    ])
+    result = make_loop(tmp_path, llm, error_limit=2).run("t", "s")
+    assert result.status == p.STATUS_ERROR_LIMIT
+    assert result.steps == 4
+
+
+def test_non_format_tool_result_does_not_count_toward_error_limit(tmp_path):
+    # ToolResult(ok=False) esperado (arquivo ausente) é resultado normal, não erro de formato.
+    llm = ScriptedLLM([
+        make_response(calls=[call("r1", "read_file", {"path": "missing.txt"})]),
+        make_response(calls=[call("r2", "read_file", {"path": "missing.txt"})]),
+        make_response(calls=[submit("s", "done")]),
+    ])
+    result = make_loop(tmp_path, llm, error_limit=2).run("t", "s")
+    assert result.status == p.STATUS_COMPLETED
+    assert not any(e.format_error for e in result.tool_events)
+
+
+def test_submit_completes_even_if_other_calls_in_turn_failed_format(tmp_path):
+    llm = ScriptedLLM([make_response(calls=[call("b", "nope", {}), submit("s", "answer")])])
+    result = make_loop(tmp_path, llm, error_limit=5).run("t", "s")
+    assert result.status == p.STATUS_COMPLETED
+    assert result.final_answer == "answer"
+
+
+def test_other_tools_in_submit_turn_run_before_submit(tmp_path):
+    llm = ScriptedLLM([make_response(calls=[
+        call("w", "write_file", {"path": "out.txt", "content": "done\n"}),
+        submit("s", "wrote it"),
+    ])])
+    result = make_loop(tmp_path, llm).run("t", "s")
+    assert result.status == p.STATUS_COMPLETED
+    assert (tmp_path / "out.txt").read_text(encoding="utf-8") == "done\n"
+
+
+def test_second_submit_in_same_turn_is_not_executed(tmp_path):
+    llm = ScriptedLLM([make_response(calls=[submit("s1", "first"), submit("s2", "second")])])
+    result = make_loop(tmp_path, llm).run("t", "s")
+    assert result.final_answer == "first"
+    obs = {e.call_id: e.observation for e in result.tool_events}
+    assert obs["s2"].startswith("not executed")
+
+
+# --- D1: precedência de estados -------------------------------------------------------
+
+
+def test_tokens_breach_wins_over_unknown_cost(tmp_path):
+    # D1: max_tokens (cota inferior medida) antes de budget_unverifiable.
+    llm = ScriptedLLM([make_response(content="x", prompt=60, completion=40, cost=None)])
+    result = make_loop(tmp_path, llm).run("t", "s", max_tokens=100, max_cost_usd=1.0)
+    assert result.status == p.STATUS_BUDGET
+    assert result.final_answer == "x"
+
+
+def test_known_cost_breach_wins_over_unknown_attempts(tmp_path):
+    attempts = (
+        AttemptRecord(index=1, outcome="error", wall_clock_ms=1.0, error_type="RuntimeError", retryable=True),
+        AttemptRecord(index=2, outcome="ok", wall_clock_ms=1.0),
+    )
+    llm = ScriptedLLM([make_response(content="x", cost=2.0, attempts=attempts)])
+    result = make_loop(tmp_path, llm).run("t", "s", max_cost_usd=1.0)
+    assert result.status == p.STATUS_BUDGET
+
+
+def test_unknown_cost_with_budget_is_unverifiable_and_keeps_text(tmp_path):
+    llm = ScriptedLLM([make_response(content="maybe", cost=None)])
+    result = make_loop(tmp_path, llm).run("t", "s", max_cost_usd=1.0)
+    assert result.status == p.STATUS_UNVERIFIABLE
+    assert result.final_answer == "maybe"
+    assert result.total_cost_usd is None
+
+
+def test_budget_breach_on_text_turn_is_not_completion(tmp_path):
+    llm = ScriptedLLM([make_response(content="late", cost=5.0)])
+    result = make_loop(tmp_path, llm).run("t", "s", max_cost_usd=1.0)
+    assert result.status == p.STATUS_BUDGET
+    assert result.final_answer == "late"
+
+
+def test_budget_breach_on_submit_turn_does_not_complete(tmp_path):
+    llm = ScriptedLLM([make_response(calls=[submit("s", "final")], cost=5.0)])
+    result = make_loop(tmp_path, llm).run("t", "s", max_cost_usd=1.0)
+    assert result.status == p.STATUS_BUDGET
+    assert result.final_answer is None  # o turno não tinha texto, e a submissão não conta
+    assert [e.observation for e in result.tool_events] == []  # submit não executado
+
+
+def test_budget_breach_does_not_execute_tools(tmp_path):
+    llm = ScriptedLLM([make_response(
+        calls=[call("w", "write_file", {"path": "never.txt", "content": "x"})],
+        prompt=60, completion=40, cost=0.01,
+    )])
+    result = make_loop(tmp_path, llm).run("t", "s", max_tokens=100)
+    assert result.status == p.STATUS_BUDGET
+    assert not (tmp_path / "never.txt").exists()
+    observation = next(m["content"] for m in result.messages if m.get("tool_call_id") == "w")
+    assert observation.startswith("not executed: run stopped with status budget_exceeded")
+
+
+def test_exact_max_steps_counts_logical_calls(tmp_path):
+    llm = ScriptedLLM([make_response(calls=[call("r", "run_bash", {"command": "echo x"})], cost=0.1)])
+    result = make_loop(tmp_path, llm).run("t", "s", max_steps=3)
+    assert result.status == p.STATUS_MAX_STEPS
+    assert result.steps == 3
+    assert len(llm.calls) == 3
+
+
+def test_max_steps_final_answer_is_last_text(tmp_path):
+    llm = ScriptedLLM([make_response(content="partial thought", calls=[call("r", "run_bash", {"command": "echo x"})])])
+    result = make_loop(tmp_path, llm).run("t", "s", max_steps=2)
+    assert result.status == p.STATUS_MAX_STEPS
+    assert result.final_answer == "partial thought"
+
+
+def test_final_answer_is_none_not_empty_string(tmp_path):
+    result = make_loop(tmp_path, ScriptedLLM([make_response(content="", calls=[submit("s", "")])])).run("t", "s")
+    assert result.status == p.STATUS_COMPLETED
+    assert result.final_answer == ""  # submissão explícita de string vazia é resposta medida, não ausência
+    # Texto vazio sem submissão: max_steps=1 para no primeiro turno, sem texto -> None (não "").
+    result2 = make_loop(tmp_path, ScriptedLLM([make_response(content="", cost=0.0)])).run("t", "s", max_steps=1)
+    assert result2.status == p.STATUS_MAX_STEPS
+    assert result2.final_answer is None
+
+
+def test_invalid_parameters_raise_before_any_call(tmp_path):
+    llm = ScriptedLLM([make_response(calls=[submit("s", "x")])])
+    loop = make_loop(tmp_path, llm)
+    with pytest.raises(ValueError):
+        loop.run("t", "s", max_steps=0)
+    with pytest.raises(ValueError):
+        loop.run("t", "s", max_tokens=0)
+    with pytest.raises(ValueError):
+        loop.run("t", "s", max_cost_usd=0)
+    assert llm.calls == []
+
+
+# --- falha de provedor e tentativas (I1) ----------------------------------------------
+
+
+def test_provider_error_keeps_totals_attempts_and_messages(tmp_path):
+    llm = ScriptedLLM([
+        make_response(calls=[call("b1", "run_bash", {"command": "echo hi"})], prompt=30, completion=20, cost=0.2),
+        provider_failure("upstream 500", attempts=3),
+    ])
+    result = make_loop(tmp_path, llm).run("t", "s")
+    assert result.status == p.STATUS_PROVIDER_ERROR
+    assert result.final_answer is None  # primeiro turno não tinha texto
+    assert result.steps == 1
+    assert result.provider_calls_failed == 1
+    assert result.provider_attempts == 1 + 3
+    assert result.failed_attempt_count == 3
+    failed = result.calls[1]
+    assert failed.outcome == "provider_error"
+    assert len(failed.attempts) == 3
+    assert failed.cost_basis == "unknown"
+    assert "RuntimeError" in result.error
+    # Totais incluem chamada com falha como desconhecida -> None (D5), mas o primeiro passo está no registro.
+    assert result.calls[0].total_tokens == 50
+    assert result.total_tokens is None
+    assert result.total_cost_usd is None
+    assert any(m.get("tool_call_id") == "b1" for m in result.messages)
+    assert "failed_attempt_usage" in result.unmeasured
+
+
+def test_provider_error_on_first_call_has_no_measured_usage(tmp_path):
+    result = make_loop(tmp_path, ScriptedLLM([provider_failure("down")])).run("t", "s")
+    assert result.status == p.STATUS_PROVIDER_ERROR
+    assert result.steps == 0
+    assert result.total_tokens is None and result.total_cost_usd is None
+    assert result.total_cached_input_tokens is None and result.total_reasoning_tokens is None
+    assert result.cost_basis == "unknown"
+    assert len(result.messages) == 2
+
+
+def test_retried_success_marks_usage_incomplete(tmp_path):
+    attempts = (
+        AttemptRecord(index=1, outcome="error", wall_clock_ms=3.0, error_type="RateLimitError", retryable=True, backoff_s=1.0),
+        AttemptRecord(index=2, outcome="ok", wall_clock_ms=2.0),
+    )
+    llm = ScriptedLLM([make_response(calls=[submit("s", "ok")], prompt=5, completion=5, cost=0.1, attempts=attempts)])
+    result = make_loop(tmp_path, llm).run("t", "s")
+    assert result.status == p.STATUS_COMPLETED
+    assert result.provider_attempts == 2
+    assert result.failed_attempt_count == 1
+    assert result.total_tokens is None  # tentativa com erro não tem uso conhecido (D5)
+    assert "failed_attempt_usage" in result.unmeasured
+
+
+# --- I6: sentinelas ---------------------------------------------------------------
+
+
+def test_partitions_are_explicit_and_none_have_reasons(tmp_path):
+    llm = ScriptedLLM([make_response(calls=[submit("s", "x")], prompt=3, completion=4)])
+    result = make_loop(tmp_path, llm).run("t", "s")
+    assert set(result.partitions) == set(p.PARTITIONS)
+    assert result.partitions["execution"] == 7
+    for name, value in result.partitions.items():
+        if value is None:
+            assert name in result.unmeasured, name
+    assert result.metric == "CORE_TOKENS_PARTIAL"
+    assert result.core_tokens_partial == 7
+
+
+def test_no_zero_sentinel_for_unmeasured_latency_or_usage(tmp_path):
+    llm = ScriptedLLM([make_response(calls=[submit("s", "x")], prompt=None, completion=None, cost=None)])
+    result = make_loop(tmp_path, llm).run("t", "s")
+    assert result.total_tokens is None
+    assert result.total_cost_usd is None
+    assert result.total_wall_clock_ms is not None and result.total_wall_clock_ms >= 0
+    assert result.llm_wall_clock_ms is not None
+
+
+def test_run_identity_is_declared_when_absent_and_recorded_when_given(tmp_path):
+    llm = ScriptedLLM([make_response(calls=[submit("s", "x")])])
+    assert "run_identity" in make_loop(tmp_path, llm).run("t", "s").unmeasured
+    llm2 = ScriptedLLM([make_response(calls=[submit("s", "x")])])
+    r2 = make_loop(tmp_path, llm2).run("t", "s", run_id="task1|treat|bind|shape|rep0")
+    assert r2.run_id == "task1|treat|bind|shape|rep0"
+    assert "run_identity" not in r2.unmeasured
+
+
+def test_cost_basis_zero_priced_is_counted_separately(tmp_path):
+    llm = ScriptedLLM([
+        make_response(calls=[call("r", "run_bash", {"command": "echo x"})], cost=0.0),
+        make_response(calls=[submit("s", "x")], cost=0.0),
+    ])
+    result = make_loop(tmp_path, llm).run("t", "s")
+    assert result.cost_basis == "priced_zero_by_table"
+    assert result.zero_priced_calls == 2
+    assert result.total_cost_usd == 0.0
+
+
+# --- auditoria bruta (A6) ----------------------------------------------------------
+
+
+def test_audit_keeps_raw_output_and_model_sees_truncated(tmp_path):
+    loop = AgentLoop(
+        ScriptedLLM([
+            make_response(calls=[call("b", "run_bash", {"command": f'"{sys.executable}" -c "print(\'Q\'*5000)"'})]),
+            make_response(calls=[submit("s", "done")]),
+        ]),
+        ToolExecutor(tmp_path, max_output_chars=400),
+        ContextManager(keep_recent_observations=10),
+    )
+    result = loop.run("t", "s")
+    event = next(e for e in result.tool_events if e.call_id == "b")
+    assert event.truncated is True
+    assert len(event.observation) <= 400
+    assert "Q" * 5000 in event.raw_output
+    import hashlib
+    assert event.raw_sha256 == hashlib.sha256(event.raw_output.encode()).hexdigest()
+    seen_by_model = tool_contents(result.messages)[0]
+    assert seen_by_model == event.observation
+
+
+def test_unknown_tool_and_invalid_json_are_format_errors(tmp_path):
+    llm = ScriptedLLM([
+        make_response(calls=[call("u", "delete_everything", {})]),
+        make_response(calls=[call("j", "read_file", "{not json")]),
+        make_response(calls=[call("a", "edit_file", {"path": "x.txt"})]),
+        make_response(calls=[submit("s", "recovered")]),
+    ])
+    result = make_loop(tmp_path, llm, error_limit=10).run("t", "s")
+    assert result.status == p.STATUS_COMPLETED
+    by_id = {e.call_id: e for e in result.tool_events}
+    assert by_id["u"].format_error and "unknown tool 'delete_everything'" in by_id["u"].observation
+    assert by_id["j"].format_error and "invalid JSON arguments for read_file" in by_id["j"].observation
+    assert by_id["a"].format_error and "invalid arguments for edit_file" in by_id["a"].observation
+
+
+def test_unexpected_tool_exception_is_observation_and_format_error(tmp_path):
+    llm = ScriptedLLM([
+        make_response(calls=[call("b", "run_bash", {"command": "echo x", "timeout": 0})]),  # ValueError interno
+        make_response(calls=[submit("s", "ok")]),
+    ])
+    result = make_loop(tmp_path, llm, error_limit=5).run("t", "s")
+    event = next(e for e in result.tool_events if e.call_id == "b")
+    assert event.format_error and "run_bash failed: ValueError" in event.observation
+
+
+# --- ledger e interrupção (I1, D7) -------------------------------------------------
+
+
+def test_ledger_records_full_sequence_and_reconciles(tmp_path):
+    path = tmp_path / "ledger.jsonl"
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    llm = ScriptedLLM([
+        make_response(calls=[call("r", "run_bash", {"command": "echo ok"})], prompt=2, completion=2, cost=0.1),
+        make_response(calls=[submit("s", "done")], prompt=3, completion=3, cost=0.1),
+    ])
+    with RunLedger(path) as ledger:
+        result = make_loop(workspace, llm, ledger=ledger).run("t", "s", run_id="r1")
+    events = [e["event"] for e in read_events(path)]
+    assert events[0] == "run_started"
+    assert events[-1] == "run_finished"
+    assert events.count("call_started") == 2 and events.count("call_finished") == 2
+    assert events.count("tool_finished") == 2
+    summary = reconcile(path)
+    assert summary["in_flight_call_indices"] == []
+    assert summary["finished_records"][1]["total_tokens"] == 4
+    assert result.status == p.STATUS_COMPLETED
+
+
+def test_ledger_config_snapshot_has_no_environment_values(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-must-not-appear-999")
+    path = tmp_path / "ledger.jsonl"
+    with RunLedger(path) as ledger:
+        make_loop(tmp_path, ScriptedLLM([make_response(calls=[submit("s", "x")])]), ledger=ledger).run("t", "s")
+    text = path.read_text(encoding="utf-8")
+    assert "sk-must-not-appear-999" not in text
+    first = json.loads(text.splitlines()[0])
+    assert first["event"] == "run_started"
+    assert "env_allowlist" in first["config"]
+
+
+def test_ledger_run_started_records_effective_request_timeout(tmp_path):
+    from types import SimpleNamespace
+
+    from dv_harness.llm_client import LLMClient
+
+    submit_raw = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(
+            content=None,
+            tool_calls=[SimpleNamespace(id="s", function=SimpleNamespace(name="submit", arguments='{"answer": "x"}'))],
+        ))],
+        usage=None, model="mock", id="r1",
+    )
+    seen: list[dict] = []
+
+    def fake(**kwargs):
+        seen.append(kwargs)
+        return submit_raw
+
+    llm = LLMClient(default_model="mock", completion_fn=fake, cost_fn=lambda **_: 0.0,
+                    request_timeout_s=42.0, sleep_fn=lambda _s: None)
+    path = tmp_path / "ledger.jsonl"
+    with RunLedger(path) as ledger:
+        make_loop(tmp_path, llm, ledger=ledger).run("t", "s")
+    first = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+    assert first["event"] == "run_started"
+    assert first["config"]["request_timeout_s"] == 42.0
+    assert seen[0]["timeout"] == 42.0  # o valor registrado é o que foi repassado ao litellm
+
+
+def test_interruption_leaves_in_flight_call_and_earlier_accounting(tmp_path):
+    path = tmp_path / "ledger.jsonl"
+    llm = ScriptedLLM([
+        make_response(calls=[call("r", "run_bash", {"command": "echo x"})], prompt=10, completion=10, cost=0.2),
+        KeyboardInterrupt(),
+    ])
+    with RunLedger(path) as ledger, pytest.raises(KeyboardInterrupt):
+        make_loop(tmp_path, llm, ledger=ledger).run("t", "s")
+    summary = reconcile(path)
+    assert summary["calls_started"] == 2
+    assert summary["calls_finished"] == 1
+    assert summary["in_flight_call_indices"] == [2]
+    assert summary["finished_records"][1]["total_tokens"] == 20
+    assert summary["run_finished_events"] == 0
+
+
+# --- consistência do histórico ----------------------------------------------------
+
+
+def test_consecutive_runs_do_not_share_state(tmp_path):
+    loop = make_loop(tmp_path, ScriptedLLM([make_response(calls=[submit("s", "a")], cost=0.1)]))
+    r1 = loop.run("t1", "s")
+    loop.llm.script = [make_response(calls=[submit("s2", "b")], cost=0.5)]
+    loop.llm.calls = []
+    r2 = loop.run("t2", "s")
+    assert r1.messages is not r2.messages and r1.calls is not r2.calls
+    assert r1.final_answer == "a" and r2.final_answer == "b"
+    assert len(r1.calls) == 1 and len(r2.calls) == 1
+    assert r2.total_cost_usd == pytest.approx(0.5)
+
+
+def test_masking_does_not_alter_log_and_reports_savings(tmp_path):
+    llm = ScriptedLLM([
+        make_response(calls=[call("b1", "run_bash", {"command": f'"{sys.executable}" -c "print(\'x\' * 600)"'})]),
+        make_response(calls=[call("b2", "run_bash", {"command": "echo ok"})]),
+        make_response(calls=[submit("s", "done")]),
+    ])
+    result = make_loop(tmp_path, llm, keep_recent=0).run("t", "s")
+    long_obs = tool_contents(result.messages)[0]
+    assert len(long_obs) > len(DEFAULT_PLACEHOLDER)
+    assert result.chars_saved_by_masking == 2 * (len(long_obs) - len(DEFAULT_PLACEHOLDER))
+    assert tool_contents(llm.calls[2]["messages"])[0] == DEFAULT_PLACEHOLDER
+
+
+def test_unknown_token_usage_with_token_budget_is_unverifiable(tmp_path):
+    # Insumo de tokens desconhecido com max_tokens definido: orçamento não verificável, não "passou".
+    llm = ScriptedLLM([make_response(content="x", prompt=None, completion=5, cost=0.1)])
+    result = make_loop(tmp_path, llm).run("t", "s", max_tokens=100)
+    assert result.status == p.STATUS_UNVERIFIABLE
+    assert result.final_answer == "x"
+
+
+def test_error_limit_must_be_positive(tmp_path):
+    with pytest.raises(ValueError, match="error_limit"):
+        make_loop(tmp_path, ScriptedLLM([make_response(content="x")]), error_limit=0)
+
+
+def test_total_of_no_calls_is_none_not_zero():
+    # Guarda defensiva: sum([]) seria o sentinela 0, proibido pelo I6.
+    from dv_harness.agent_loop import _total
+    assert _total([], lambda c: c.total_tokens) is None
+
+
+# --- Decisão 1 refinada: tokens_lower_bound e failed_attempt_count ----------------------
+
+
+def test_recovered_429_keeps_a_usable_lower_bound(tmp_path):
+    attempts = (
+        AttemptRecord(index=1, outcome="error", wall_clock_ms=3.0, error_type="RateLimitError", retryable=True, backoff_s=1.0),
+        AttemptRecord(index=2, outcome="ok", wall_clock_ms=2.0),
+    )
+    llm = ScriptedLLM([make_response(calls=[submit("s", "ok")], prompt=6, completion=4, cost=0.1, attempts=attempts)])
+    result = make_loop(tmp_path, llm).run("t", "s")
+    assert result.status == p.STATUS_COMPLETED
+    assert result.total_tokens is None          # D5: não é total medido
+    assert result.tokens_lower_bound == 10      # mas o uso medido é conhecido e vale como cota inferior
+    assert result.failed_attempt_count == 1
+    assert result.unmeasured.get("total_tokens")
+
+
+def test_provider_error_lower_bound_is_prior_measured_usage(tmp_path):
+    llm = ScriptedLLM([
+        make_response(calls=[call("b", "run_bash", {"command": "echo x"})], prompt=30, completion=20, cost=0.2),
+        provider_failure("down", attempts=2),
+    ])
+    result = make_loop(tmp_path, llm).run("t", "s")
+    assert result.total_tokens is None
+    assert result.tokens_lower_bound == 50
+    assert result.failed_attempt_count == 2
+
+
+def test_lower_bound_is_none_when_nothing_was_measured_never_zero(tmp_path):
+    result = make_loop(tmp_path, ScriptedLLM([provider_failure("down")])).run("t", "s")
+    assert result.tokens_lower_bound is None
+    assert "tokens_lower_bound" in result.unmeasured
+
+
+def test_lower_bound_equals_total_when_complete(tmp_path):
+    llm = ScriptedLLM([make_response(calls=[submit("s", "x")], prompt=3, completion=4)])
+    result = make_loop(tmp_path, llm).run("t", "s")
+    assert result.total_tokens == 7
+    assert result.tokens_lower_bound == 7
+    assert result.failed_attempt_count == 0
+
+
+# --- ajuste 1: PROTOCOL_ERROR conta; DOMAIN_FAILURE é observação ----------------------
+
+FAIL_CMD = "exit 1"  # exit_code != 0 em cmd.exe e em sh: falha de domínio, não de protocolo
+POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="requires POSIX shell")
+
+
+def _fail_call(call_id: str):
+    return call(call_id, "run_bash", {"command": FAIL_CMD})
+
+
+def _bad_call(call_id: str):
+    return call(call_id, "no_such_tool", {})
+
+
+def test_four_consecutive_bash_failures_do_not_trigger_error_limit(tmp_path):
+    llm = ScriptedLLM([make_response(calls=[_fail_call(f"f{i}")]) for i in range(4)]
+                      + [make_response(calls=[submit("s", "done")])])
+    result = make_loop(tmp_path, llm, error_limit=3).run("t", "s", max_steps=20)
+    assert result.status == p.STATUS_COMPLETED
+    assert result.domain_failures == 4
+    assert result.protocol_errors == 0
+    bash = [e for e in result.tool_events if e.name == "run_bash"]
+    assert len(bash) == 4 and all(e.failure_kind == p.FAILURE_DOMAIN and not e.ok for e in bash)
+    assert not any(e.format_error for e in bash)
+
+
+def test_three_consecutive_protocol_errors_trigger_error_limit(tmp_path):
+    llm = ScriptedLLM([make_response(calls=[_bad_call(f"b{i}")]) for i in range(3)])
+    result = make_loop(tmp_path, llm, error_limit=3).run("t", "s", max_steps=20)
+    assert result.status == p.STATUS_ERROR_LIMIT
+    assert result.protocol_errors == 3
+    assert all(e.failure_kind == p.FAILURE_PROTOCOL for e in result.tool_events)
+
+
+def test_domain_turn_resets_the_protocol_counter(tmp_path):
+    llm = ScriptedLLM([
+        make_response(calls=[_bad_call("b1")]),   # protocolo 1
+        make_response(calls=[_bad_call("b2")]),   # protocolo 2
+        make_response(calls=[_fail_call("f1")]),  # domínio: zera
+        make_response(calls=[_bad_call("b3")]),   # protocolo 1
+        make_response(calls=[_bad_call("b4")]),   # protocolo 2 (limite 3 não atingido)
+        make_response(calls=[submit("s", "done")]),
+    ])
+    result = make_loop(tmp_path, llm, error_limit=3).run("t", "s", max_steps=20)
+    assert result.status == p.STATUS_COMPLETED
+
+
+def test_mixed_turn_with_protocol_error_counts_once(tmp_path):
+    # Um turno com falha de domínio E erro de protocolo conta como um turno de protocolo.
+    llm = ScriptedLLM([make_response(calls=[_fail_call("f"), _bad_call("b")]) for _ in range(3)])
+    result = make_loop(tmp_path, llm, error_limit=3).run("t", "s", max_steps=20)
+    assert result.status == p.STATUS_ERROR_LIMIT
+    assert result.steps == 3
+    assert result.protocol_errors == 3 and result.domain_failures == 3
+
+
+def test_text_only_turn_is_protocol_and_is_counted(tmp_path):
+    llm = ScriptedLLM([make_response(content="thinking"), make_response(content="thinking")])
+    result = make_loop(tmp_path, llm, error_limit=2).run("t", "s", max_steps=20)
+    assert result.status == p.STATUS_ERROR_LIMIT
+    assert result.protocol_errors == 2
+
+
+@POSIX_ONLY
+def test_command_timeout_is_domain_failure_and_counted_as_cmd_timeout(tmp_path):
+    slow = call("t1", "run_bash", {"command": f'"{sys.executable}" -c "import time; time.sleep(5)"', "timeout": 0.5})
+    llm = ScriptedLLM([make_response(calls=[slow]), make_response(calls=[submit("s", "done")])])
+    result = make_loop(tmp_path, llm, error_limit=1).run("t", "s", max_steps=10)
+    assert result.status == p.STATUS_COMPLETED
+    assert result.cmd_timeouts == 1
+    assert result.tool_events[0].timed_out and result.tool_events[0].failure_kind == p.FAILURE_DOMAIN
+
+
+def test_token_buckets_are_summed_only_when_every_call_measures_them(tmp_path):
+    import dataclasses
+    measured = dataclasses.replace(make_response(calls=[call("c1", "run_bash", {"command": FAIL_CMD})]),
+                                   cache_write_tokens=3, cache_read_tokens=2, cached_input_tokens=2)
+    other = dataclasses.replace(make_response(calls=[submit("s", "done")]),
+                                cache_write_tokens=4, cache_read_tokens=1, cached_input_tokens=1)
+    other = dataclasses.replace(other, reasoning_tokens=2)  # subcampo: não soma em output_tokens
+    result = make_loop(tmp_path, ScriptedLLM([measured, other])).run("t", "s", max_steps=10)
+    assert result.total_cache_write_tokens == 7
+    assert result.total_cached_input_tokens == 3
+    assert result.total_output_tokens == 10            # completion 5 + 5
+    assert result.total_uncached_input_tokens is None  # não exposto
+    assert "not exposed" in result.unmeasured["total_uncached_input_tokens"]
+    assert "total_cache_write_tokens" not in result.unmeasured
+
+
+def test_token_bucket_is_none_when_one_call_does_not_expose_it(tmp_path):
+    import dataclasses
+    with_write = dataclasses.replace(make_response(calls=[call("c1", "run_bash", {"command": FAIL_CMD})]),
+                                     cache_write_tokens=3)
+    without = make_response(calls=[submit("s", "done")])  # cache_write_tokens=None
+    result = make_loop(tmp_path, ScriptedLLM([with_write, without])).run("t", "s", max_steps=10)
+    assert result.total_cache_write_tokens is None
+    assert "not exposed" in result.unmeasured["total_cache_write_tokens"]
+
+
+def test_total_cache_read_tokens_is_canonical_and_alias_is_kept(tmp_path):
+    import dataclasses
+    a = dataclasses.replace(make_response(calls=[call("c1", "run_bash", {"command": FAIL_CMD})]),
+                            cache_read_tokens=7, cached_input_tokens=7)
+    b = dataclasses.replace(make_response(calls=[submit("s", "done")]), cache_read_tokens=5, cached_input_tokens=5)
+    result = make_loop(tmp_path, ScriptedLLM([a, b])).run("t", "s", max_steps=10)
+    assert result.total_cache_read_tokens == 12
+    assert result.total_cached_input_tokens == result.total_cache_read_tokens  # alias v2 preservado
+
+
+def test_total_cache_read_tokens_is_none_with_reason_when_not_exposed(tmp_path):
+    result = make_loop(tmp_path, ScriptedLLM([make_response(calls=[submit("s", "done")])])).run("t", "s", max_steps=10)
+    assert result.total_cache_read_tokens is None
+    assert "not exposed" in result.unmeasured["total_cache_read_tokens"]
+
+
+# --- orçamento pelo limite inferior: retry recuperado não é orçamento não verificável ----
+
+
+def _raw_tool(tc, usage=None):
+    from types import SimpleNamespace as NS
+
+    message = NS(content=None, tool_calls=[NS(id=tc.id, function=NS(name=tc.name, arguments=tc.arguments))])
+    usage = usage if usage is not None else NS(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+    return NS(choices=[NS(message=message)], usage=usage, model="mock", id="r1")
+
+
+@pytest.mark.parametrize("error_name", ["ServiceUnavailableError", "Timeout"])
+def test_recovered_503_or_timeout_does_not_abort_turn_when_budget_is_set(tmp_path, error_name):
+    import litellm
+    from dv_harness.llm_client import LLMClient, RetryPolicy
+
+    def transient():
+        if error_name == "Timeout":
+            return litellm.Timeout(message="request timed out", model="mock", llm_provider="gemini")
+        return litellm.ServiceUnavailableError(message="503", model="mock", llm_provider="gemini")
+
+    write = call("w", "write_file", {"path": "f.txt", "content": "done\n"})
+    detailed = litellm.Usage(prompt_tokens=10, completion_tokens=5, total_tokens=15,
+                             prompt_tokens_details={"cached_tokens": 4})
+    seq = {"n": 0}
+
+    def completion(**_):
+        seq["n"] += 1
+        if seq["n"] == 1:
+            raise transient()  # 1a tentativa falha; a 2a se recupera
+        return _raw_tool(write, detailed) if seq["n"] == 2 else _raw_tool(submit("s", "ok"), detailed)
+
+    llm = LLMClient(default_model="mock", completion_fn=completion, cost_fn=lambda **_: 0.01,
+                    retry=RetryPolicy(max_attempts=3, base_delay_s=0), sleep_fn=lambda _s: None)
+    path = tmp_path / "ledger.jsonl"
+    with RunLedger(path) as ledger:
+        result = make_loop(tmp_path, llm, ledger=ledger).run("t", "s", max_steps=8, max_cost_usd=0.5)
+
+    assert result.status == p.STATUS_COMPLETED  # não é budget_unverifiable
+    assert (tmp_path / "f.txt").read_text(encoding="utf-8") == "done\n"  # a ferramenta do turno foi executada
+    assert result.failed_attempt_count == 1
+    recovered = result.calls[0]
+    assert recovered.attempt_usage_complete is False  # flag preservada (contrato v3)
+    assert recovered.cost_usd == pytest.approx(0.01)  # custo conhecido: a tentativa bem-sucedida foi medida
+    assert result.total_tokens is None  # total continua null com tentativa falha (D5)
+    assert result.tokens_lower_bound == 2 * 15  # limite inferior inclui a chamada recuperada
+    finished = [e for e in map(json.loads, path.read_text(encoding="utf-8").splitlines())
+                if e["event"] == "call_finished"]
+    assert finished[0]["record"]["usage_details"]["prompt_tokens_details"]["cached_tokens"] == 4
+
+
+def test_unknown_price_still_makes_budget_unverifiable(tmp_path):
+    from litellm.exceptions import BadRequestError
+    from dv_harness.llm_client import LLMClient
+
+    def no_price(**_):
+        raise BadRequestError(message="no price", model="mock", llm_provider="gemini")
+
+    write = call("w", "write_file", {"path": "f.txt", "content": "x"})
+    llm = LLMClient(default_model="mock", completion_fn=lambda **_: _raw_tool(write), cost_fn=no_price)
+    result = make_loop(tmp_path, llm).run("t", "s", max_steps=8, max_cost_usd=0.5)
+    assert result.status == p.STATUS_UNVERIFIABLE  # preço desconhecido continua sendo o gatilho de parada
+    assert not (tmp_path / "f.txt").exists()

@@ -1,0 +1,457 @@
+"""Testes do Módulo 1 (LLMClient), protocolo v2: retentativas, tentativas, cost_basis e sentinelas.
+
+Sem chamada real de API. Executar: python -m pytest tests/test_llm_client.py -v
+"""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import httpx
+import litellm
+import pytest
+
+from support import ROOT  # noqa: F401
+from dv_harness.llm_client import (
+    ABORT_EXCEPTIONS,
+    LLMCallFailed,
+    LLMClient,
+    LLMResponse,
+    RetryPolicy,
+    ToolCall,
+)
+from litellm.exceptions import AuthenticationError, BadRequestError
+
+MESSAGES = [{"role": "user", "content": "list files"}]
+
+
+def _raw(content=None, tool_calls=None, prompt=10, completion=5, model="gpt-x", rid="chatcmpl-1",
+         usage_obj=None, hidden=None):
+    message = SimpleNamespace(content=content, tool_calls=tool_calls)
+    if usage_obj is None and prompt is not None:
+        usage_obj = SimpleNamespace(prompt_tokens=prompt, completion_tokens=completion,
+                                    total_tokens=prompt + completion)
+    raw = SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=usage_obj, model=model, id=rid)
+    if hidden is not None:
+        raw._hidden_params = hidden
+    return raw
+
+
+def _client(completion_fn, cost=0.25, retry=None, sleeps=None):
+    sleep_log = sleeps if sleeps is not None else []
+    return LLMClient(
+        default_model="fake/model",
+        completion_fn=completion_fn,
+        cost_fn=lambda **_: cost,
+        retry=retry or RetryPolicy(max_attempts=3, base_delay_s=1.0, multiplier=2.0, max_delay_s=60.0),
+        sleep_fn=sleep_log.append,
+    )
+
+
+# --- contabilização da chamada bem-sucedida -------------------------------------
+
+
+def test_success_fields_are_measured_and_total_is_sum():
+    client = _client(lambda **_: _raw(content="ok", prompt=30, completion=12), cost=0.5)
+    resp = client.complete(MESSAGES)
+    assert resp.prompt_tokens == 30 and resp.completion_tokens == 12 and resp.total_tokens == 42
+    assert resp.cost_usd == pytest.approx(0.5)
+    assert resp.cost_basis == "priced_by_table"
+    assert resp.model == "fake/model"
+    assert resp.model_returned == "gpt-x"  # raw.model: modelo exato retornado pela API
+    assert resp.api_id == "chatcmpl-1"
+    assert resp.wall_clock_ms is not None and resp.wall_clock_ms >= 0
+    assert len(resp.attempts) == 1 and resp.attempts[0].outcome == "ok"
+
+
+def test_tools_forwarded_only_when_non_empty():
+    seen = []
+
+    def fake(**kwargs):
+        seen.append(kwargs)
+        return _raw(content="x")
+
+    client = _client(fake)
+    client.complete(MESSAGES, tools=[{"type": "function"}])
+    client.complete(MESSAGES, tools=[])
+    assert "tools" in seen[0] and "tools" not in seen[1]
+
+
+def test_tool_calls_are_parsed():
+    tc = SimpleNamespace(id="c1", function=SimpleNamespace(name="read_file", arguments='{"path": "a"}'))
+    resp = _client(lambda **_: _raw(content=None, tool_calls=[tc])).complete(MESSAGES)
+    assert resp.tool_calls == (ToolCall(id="c1", name="read_file", arguments='{"path": "a"}'),)
+    assert resp.tool_calls[0].parsed_arguments == {"path": "a"}
+
+
+# --- I6: usage ausente é None, nunca zero ---------------------------------------
+
+
+def test_missing_usage_is_none_not_zero():
+    resp = _client(lambda **_: _raw(content="ok", usage_obj=None, prompt=None)).complete(MESSAGES)
+    assert resp.prompt_tokens is None
+    assert resp.completion_tokens is None
+    assert resp.total_tokens is None
+
+
+def test_partial_usage_makes_total_none():
+    usage = SimpleNamespace(prompt_tokens=10)  # sem completion_tokens
+    resp = _client(lambda **_: _raw(content="ok", usage_obj=usage)).complete(MESSAGES)
+    assert resp.prompt_tokens == 10
+    assert resp.completion_tokens is None
+    assert resp.total_tokens is None
+
+
+def test_boolean_is_not_a_token_count():
+    usage = SimpleNamespace(prompt_tokens=True, completion_tokens=2)
+    resp = _client(lambda **_: _raw(content="ok", usage_obj=usage)).complete(MESSAGES)
+    assert resp.prompt_tokens is None
+
+
+def test_cached_and_reasoning_none_when_not_exposed_and_zero_when_measured_zero():
+    absent = _client(lambda **_: _raw(content="ok")).complete(MESSAGES)
+    assert absent.cached_input_tokens is None and absent.reasoning_tokens is None
+    usage = SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2,
+                            prompt_tokens_details=SimpleNamespace(cached_tokens=0),
+                            completion_tokens_details=None)
+    measured = _client(lambda **_: _raw(content="ok", usage_obj=usage)).complete(MESSAGES)
+    assert measured.cached_input_tokens == 0
+    assert measured.reasoning_tokens is None
+
+
+def test_llm_response_defaults_are_none_not_sentinels():
+    resp = LLMResponse(content=None)
+    assert resp.model is None and resp.prompt_tokens is None and resp.completion_tokens is None
+    assert resp.total_tokens is None and resp.cost_usd is None and resp.wall_clock_ms is None
+
+
+# --- cost_basis --------------------------------------------------------------------
+
+
+def test_zero_table_price_is_priced_zero_not_measured_free():
+    resp = _client(lambda **_: _raw(content="ok"), cost=0.0).complete(MESSAGES)
+    assert resp.cost_usd == 0.0
+    assert resp.cost_basis == "priced_zero_by_table"
+
+
+def test_unknown_price_is_none_and_basis_unknown():
+    def no_price(completion_response, model):
+        raise BadRequestError(message="no price", model=model, llm_provider="x")
+
+    client = LLMClient(default_model="m", completion_fn=lambda **_: _raw(content="ok"), cost_fn=no_price,
+                       sleep_fn=lambda s: None)
+    resp = client.complete(MESSAGES)
+    assert resp.cost_usd is None and resp.cost_basis == "unknown" and resp.pricing_source is None
+
+
+def test_unexpected_cost_error_propagates_not_wrapped_as_unknown():
+    def buggy(completion_response, model):
+        raise RuntimeError("bug in cost function")
+
+    client = LLMClient(default_model="m", completion_fn=lambda **_: _raw(content="ok"), cost_fn=buggy,
+                       sleep_fn=lambda s: None)
+    with pytest.raises(RuntimeError, match="bug in cost function"):
+        client.complete(MESSAGES)
+
+
+# --- retentativas e tentativas (A4) ---------------------------------------------------
+
+
+def test_transient_error_is_retried_and_both_attempts_recorded():
+    state = {"n": 0}
+    sleeps: list[float] = []
+
+    def flaky(**_):
+        state["n"] += 1
+        if state["n"] == 1:
+            raise RuntimeError("429 rate limited")
+        return _raw(content="ok", prompt=4, completion=1)
+
+    resp = _client(flaky, sleeps=sleeps).complete(MESSAGES)
+    assert [a.outcome for a in resp.attempts] == ["error", "ok"]
+    assert resp.attempts[0].error_type == "RuntimeError"
+    assert resp.attempts[0].retryable is True
+    assert resp.attempts[0].backoff_s == pytest.approx(1.0)
+    assert sleeps == [pytest.approx(1.0)]
+    assert resp.total_tokens == 5
+
+
+def test_abort_exception_is_not_retried():
+    calls = {"n": 0}
+    sleeps: list[float] = []
+
+    def auth_fail(**_):
+        calls["n"] += 1
+        raise AuthenticationError(message="bad key", llm_provider="x", model="m")
+
+    client = _client(auth_fail, sleeps=sleeps)
+    with pytest.raises(LLMCallFailed) as info:
+        client.complete(MESSAGES)
+    assert calls["n"] == 1
+    assert sleeps == []
+    assert len(info.value.attempts) == 1
+    assert info.value.attempts[0].retryable is False
+    assert info.value.attempts[0].backoff_s is None
+
+
+def test_exhausted_retries_raise_with_every_attempt_and_no_final_sleep():
+    sleeps: list[float] = []
+
+    def always_fail(**_):
+        raise RuntimeError("timeout")
+
+    client = _client(always_fail, sleeps=sleeps, retry=RetryPolicy(max_attempts=3, base_delay_s=1.0, multiplier=2.0))
+    with pytest.raises(LLMCallFailed) as info:
+        client.complete(MESSAGES)
+    attempts = info.value.attempts
+    assert len(attempts) == 3
+    assert all(a.outcome == "error" for a in attempts)
+    assert [a.backoff_s for a in attempts] == [1.0, 2.0, None]
+    assert sleeps == [1.0, 2.0]
+    assert info.value.wall_clock_ms >= 0
+    assert isinstance(info.value.cause, RuntimeError)
+
+
+def test_backoff_is_exponential_and_capped():
+    policy = RetryPolicy(max_attempts=10, base_delay_s=1.0, multiplier=2.0, max_delay_s=5.0)
+    assert [policy.delay_for(n) for n in range(1, 6)] == [1.0, 2.0, 4.0, 5.0, 5.0]
+
+
+def test_retry_policy_validates_parameters():
+    with pytest.raises(ValueError):
+        RetryPolicy(max_attempts=0)
+    with pytest.raises(ValueError):
+        RetryPolicy(multiplier=0.5)
+
+
+def test_abort_list_matches_reference_classes():
+    names = {t.__name__ for t in ABORT_EXCEPTIONS}
+    assert names == {"UnsupportedParamsError", "NotFoundError", "PermissionDeniedError",
+                     "ContextWindowExceededError", "AuthenticationError"}
+
+
+def test_retry_policy_describe_is_serialisable():
+    desc = RetryPolicy().describe()
+    assert desc["max_attempts"] == 5 and "AuthenticationError" in desc["abort_on"]
+
+
+# --- validações e propagação ------------------------------------------------------
+
+
+def test_missing_model_and_empty_messages_raise():
+    client = LLMClient(completion_fn=lambda **_: _raw(content="x"), cost_fn=lambda **_: 0.0)
+    with pytest.raises(ValueError, match="no model"):
+        client.complete(MESSAGES)
+    client2 = LLMClient("m", completion_fn=lambda **_: _raw(content="x"), cost_fn=lambda **_: 0.0)
+    with pytest.raises(ValueError, match="non-empty"):
+        client2.complete([])
+
+
+def test_model_per_call_overrides_default():
+    seen = []
+
+    def fake(**kwargs):
+        seen.append(kwargs["model"])
+        return _raw(content="x")
+
+    client = _client(fake)
+    assert client.complete(MESSAGES, model="other").model == "other"
+    assert seen == ["other"]
+
+
+def test_provider_from_hidden_params_when_exposed():
+    resp = _client(lambda **_: _raw(content="x", hidden={"custom_llm_provider": "openai"})).complete(MESSAGES)
+    assert resp.provider == "openai"
+    assert _client(lambda **_: _raw(content="x")).complete(MESSAGES).provider is None
+
+
+def test_wall_clock_measures_the_call():
+    import time as _t
+
+    def slow(**_):
+        _t.sleep(0.02)
+        return _raw(content="ok")
+
+    assert _client(slow).complete(MESSAGES).wall_clock_ms >= 10.0
+
+
+def test_tool_arguments_valid_json_but_not_object_are_rejected():
+    tc = ToolCall(id="c", name="read_file", arguments="[1, 2]")
+    with pytest.raises(ValueError, match="must decode to an object"):
+        _ = tc.parsed_arguments
+    assert ToolCall(id="c", name="read_file", arguments="").parsed_arguments == {}
+
+
+# --- baldes de tokens (contrato v3) -----------------------------------------------
+
+
+def test_token_buckets_none_when_not_exposed_never_zero():
+    resp = _client(lambda **_: _raw(content="ok")).complete(MESSAGES)
+    assert resp.uncached_input_tokens is None
+    assert resp.cache_write_tokens is None
+    assert resp.cache_read_tokens is None
+    assert resp.cached_input_tokens is None
+
+
+def test_cache_read_write_and_reasoning_are_extracted_without_double_count():
+    usage = SimpleNamespace(prompt_tokens=100, completion_tokens=20, total_tokens=120,
+                            prompt_tokens_details=SimpleNamespace(cached_tokens=40, cache_write_tokens=30),
+                            completion_tokens_details=SimpleNamespace(reasoning_tokens=7))
+    resp = _client(lambda **_: _raw(content="ok", usage_obj=usage)).complete(MESSAGES)
+    assert resp.cache_read_tokens == 40
+    assert resp.cached_input_tokens == 40          # alias da v2
+    assert resp.cache_write_tokens == 30
+    assert resp.uncached_input_tokens is None      # não exposto pelo litellm 1.110.1; nunca derivado
+    assert resp.reasoning_tokens == 7
+    assert resp.total_tokens == 120                # reasoning e cache não entram no total
+
+
+def test_cache_write_falls_back_to_cache_creation_name():
+    usage = SimpleNamespace(prompt_tokens=10, completion_tokens=2, total_tokens=12,
+                            prompt_tokens_details=SimpleNamespace(cached_tokens=None, cache_creation_tokens=5),
+                            completion_tokens_details=None)
+    resp = _client(lambda **_: _raw(content="ok", usage_obj=usage)).complete(MESSAGES)
+    assert resp.cache_write_tokens == 5
+    assert resp.cache_read_tokens is None
+
+
+def test_output_tokens_is_the_canonical_name_for_completion_tokens():
+    usage = SimpleNamespace(prompt_tokens=10, completion_tokens=6, total_tokens=16,
+                            completion_tokens_details=SimpleNamespace(reasoning_tokens=4))
+    resp = _client(lambda **_: _raw(content="ok", usage_obj=usage)).complete(MESSAGES)
+    assert resp.output_tokens == resp.completion_tokens == 6
+    assert resp.reasoning_tokens == 4  # subcampo: o total continua sendo prompt + completion
+    assert resp.total_tokens == 16
+
+
+def test_output_tokens_none_when_completion_not_exposed():
+    usage = SimpleNamespace(prompt_tokens=10, completion_tokens=None, total_tokens=None)
+    resp = _client(lambda **_: _raw(content="ok", usage_obj=usage)).complete(MESSAGES)
+    assert resp.output_tokens is None
+
+
+# --- timeout explícito por requisição (hang HTTP não pode travar a chamada) -------------
+
+
+def test_request_timeout_is_forwarded_to_completion_by_default():
+    seen = []
+
+    def fake(**kwargs):
+        seen.append(kwargs)
+        return _raw(content="ok")
+
+    client = _client(fake)
+    client.complete(MESSAGES)
+    assert seen[0]["timeout"] == 60.0
+
+
+def test_request_timeout_custom_value_is_forwarded_and_none_omits_it():
+    seen = []
+
+    def fake(**kwargs):
+        seen.append(kwargs)
+        return _raw(content="ok")
+
+    LLMClient(default_model="m", completion_fn=fake, cost_fn=lambda **_: 0.0,
+              request_timeout_s=7.5).complete(MESSAGES)
+    LLMClient(default_model="m", completion_fn=fake, cost_fn=lambda **_: 0.0,
+              request_timeout_s=None).complete(MESSAGES)
+    assert seen[0]["timeout"] == 7.5
+    assert "timeout" not in seen[1]
+
+
+@pytest.mark.parametrize("bad", [0, -1.0])
+def test_request_timeout_must_be_positive(bad):
+    with pytest.raises(ValueError):
+        LLMClient(default_model="m", completion_fn=lambda **_: _raw(), request_timeout_s=bad)
+
+
+def test_timeout_in_default_params_conflicts_with_request_timeout():
+    with pytest.raises(ValueError):
+        LLMClient(default_model="m", completion_fn=lambda **_: _raw(), timeout=5)
+    # Com request_timeout_s=None, o parâmetro de provedor passa sem conflito.
+    client = LLMClient(default_model="m", completion_fn=lambda **_: _raw(), request_timeout_s=None, timeout=5)
+    assert client.request_timeout_s is None
+
+
+def test_config_snapshot_exposes_request_timeout_and_retry_policy():
+    client = _client(lambda **_: _raw(), retry=RetryPolicy(max_attempts=3))
+    snap = client.config_snapshot()
+    assert snap["request_timeout_s"] == 60.0
+    assert snap["default_model"] == "fake/model"
+    assert snap["retry_policy"]["max_attempts"] == 3
+    assert "api_key" not in str(snap).lower()
+
+
+def test_litellm_timeout_is_retried_then_succeeds_with_both_attempts_recorded():
+    calls = {"n": 0}
+
+    def fake(**_):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise litellm.Timeout(message="request timed out", model="fake/model", llm_provider="gemini")
+        return _raw(content="ok")
+
+    sleeps: list[float] = []
+    resp = _client(fake, sleeps=sleeps).complete(MESSAGES)
+    assert [a.outcome for a in resp.attempts] == ["error", "ok"]
+    assert resp.attempts[0].error_type == "Timeout"
+    assert resp.attempts[0].retryable is True
+    assert resp.attempts[0].backoff_s == 1.0
+    assert sleeps == [1.0]
+
+
+def test_httpx_read_timeout_is_retryable():
+    policy = RetryPolicy()
+    assert policy.is_retryable(httpx.ReadTimeout("read timed out")) is True
+    assert policy.is_retryable(litellm.Timeout(message="t", model="m", llm_provider="p")) is True
+
+
+def test_exhausted_timeouts_close_the_call_with_every_attempt_retryable():
+    def fake(**_):
+        raise httpx.ReadTimeout("hang")
+
+    sleeps: list[float] = []
+    with pytest.raises(LLMCallFailed) as info:
+        _client(fake, retry=RetryPolicy(max_attempts=3, base_delay_s=1.0, multiplier=2.0), sleeps=sleeps).complete(
+            MESSAGES)
+    failed = info.value
+    assert len(failed.attempts) == 3
+    assert all(a.outcome == "error" and a.retryable is True for a in failed.attempts)
+    assert [a.backoff_s for a in failed.attempts] == [1.0, 2.0, None]  # sem espera após a última
+    assert sleeps == [1.0, 2.0]
+    assert isinstance(failed.cause, httpx.ReadTimeout)
+    assert failed.wall_clock_ms >= 0
+
+
+# --- usage_details: snapshot aditivo de auditoria (não é campo do contrato v3) ----------
+
+
+def test_usage_details_keeps_measured_zero_and_omits_absent_fields():
+    usage = SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15,
+                            prompt_tokens_details=SimpleNamespace(cached_tokens=0),
+                            completion_tokens_details=None)
+    resp = _client(lambda **_: _raw(content="ok", usage_obj=usage)).complete(MESSAGES)
+    assert resp.usage_details == {"prompt_tokens_details": {"cached_tokens": 0}}  # 0 medido permanece
+    assert resp.cached_input_tokens == 0
+
+
+def test_usage_details_none_when_usage_absent_and_serialisable_when_present():
+    import json as _json
+
+    absent = _client(lambda **_: _raw(content="ok", usage_obj=None, prompt=None)).complete(MESSAGES)
+    assert absent.usage_details is None
+
+    class Opaque:  # objeto que o json padrão não serializa: vira texto, nunca quebra o ledger
+        def __str__(self):
+            return "opaque"
+
+    usage = SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2,
+                            prompt_tokens_details=SimpleNamespace(cached_tokens=3,
+                                                                  cache_creation_token_details=[Opaque()]),
+                            completion_tokens_details=SimpleNamespace(reasoning_tokens=7))
+    resp = _client(lambda **_: _raw(content="ok", usage_obj=usage)).complete(MESSAGES)
+    _json.dumps(resp.usage_details)  # não levanta
+    assert resp.usage_details["prompt_tokens_details"]["cached_tokens"] == 3
+    assert resp.usage_details["completion_tokens_details"]["reasoning_tokens"] == 7
+    assert resp.usage_details["cache_creation_token_details"] == ["opaque"]

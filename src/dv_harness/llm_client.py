@@ -1,0 +1,412 @@
+"""LLMClient: adaptador fino e multi-provedor sobre ``litellm`` com tool calling nativo.
+
+Módulo 1 do harness modular, revisado no protocolo p1 v2.
+
+Escopo: uma chamada lógica ao modelo por invocação, com retentativas por política
+(backoff exponencial, lista de abortos) e registro de **cada tentativa**, inclusive as
+que falharam. Não contém loop de agente, executor nem gerenciamento de contexto.
+
+Classificação (AGENTS.md, "Architecture default"): REUSE/WRAP. O ``litellm`` satisfaz o
+contrato de troca de provedor, tool calling e contagem. Este módulo normaliza a resposta
+e aplica a política de retentativa.
+
+Atribuições empíricas
+---------------------
+- Padrão ``LLMClient`` fino sobre ``litellm`` com tool calling nativo:
+  ``SWE-agent/mini-swe-agent`` 2.4.6 (https://github.com/SWE-agent/mini-swe-agent),
+  ``src/minisweagent/models/litellm_model.py``.
+- Lista de abortos (sem retentativa): mesma lista de ``litellm_model.py:50-57``
+  (``UnsupportedParamsError``, ``NotFoundError``, ``PermissionDeniedError``,
+  ``ContextWindowExceededError``, ``AuthenticationError``, ``KeyboardInterrupt``).
+- Política de retentativa com backoff exponencial: ``models/utils/retry.py:19-25``
+  do mini (tenacity). Diferenças deliberadas: backoff determinístico, sem jitter, para
+  reprodutibilidade, e ``max_attempts=5`` (mini 10, ctrap 20). Ambas as referências
+  **não** contabilizam o custo das tentativas que falharam; aqui isso é obrigatório.
+- Contabilização de tokens e custo por chamada: SWE-Effi (arXiv:2509.09853).
+
+Semântica de sentinelas (invariante I6)
+--------------------------------------
+- Campo ``None`` significa **não medido**. ``0`` significa medido e zero.
+- Usage ausente do provedor resulta em ``None``, nunca em ``0``.
+- ``cost_basis``: ``priced_by_table`` (custo > 0 da tabela), ``priced_zero_by_table``
+  (``0.0`` da tabela, ex.: modelos ``ollama/*``, que a tabela cadastra com preço zero),
+  ou ``unknown`` (sem preço). Zero de tabela não é custo medido nem custo zero real.
+- ``wall_clock_ms`` inclui todas as tentativas e as esperas de backoff.
+"""
+
+from __future__ import annotations
+
+import importlib.metadata
+import json
+import time
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import Any
+
+import httpx
+import litellm
+from litellm.exceptions import (
+    AuthenticationError,
+    BadRequestError,
+    ContextWindowExceededError,
+    NotFoundError,
+    PermissionDeniedError,
+    UnsupportedParamsError,
+)
+
+from dv_harness.protocol import cost_basis_for
+
+Message = Mapping[str, Any]
+Tool = Mapping[str, Any]
+
+try:
+    _LITELLM_VERSION = importlib.metadata.version("litellm")
+except importlib.metadata.PackageNotFoundError:  # pragma: no cover
+    _LITELLM_VERSION = "unknown"
+PRICING_SOURCE = f"litellm=={_LITELLM_VERSION} bundled price table"
+
+# Lista de abortos de litellm_model.py:50-57 (KeyboardInterrupt não é Exception e não entra aqui).
+ABORT_EXCEPTIONS: tuple[type[BaseException], ...] = (
+    UnsupportedParamsError,
+    NotFoundError,
+    PermissionDeniedError,
+    ContextWindowExceededError,
+    AuthenticationError,
+)
+
+# Timeouts de rede são transitórios: sempre retentáveis, mesmo se a lista de abortos crescer.
+# Sem timeout explícito, um hang HTTP nunca levanta exceção e nunca chega à política (ver request_timeout_s).
+TRANSIENT_TIMEOUT_EXCEPTIONS: tuple[type[BaseException], ...] = (litellm.Timeout, httpx.TimeoutException)
+DEFAULT_REQUEST_TIMEOUT_S = 60.0
+
+ERROR_MAX_CHARS = 300
+
+
+@dataclass(frozen=True)
+class RetryPolicy:
+    """Política de retentativa. Backoff ``base * multiplier**(n-1)`` limitado a ``max_delay_s``."""
+
+    max_attempts: int = 5
+    base_delay_s: float = 1.0
+    multiplier: float = 2.0
+    max_delay_s: float = 60.0
+    abort_on: tuple[type[BaseException], ...] = ABORT_EXCEPTIONS
+
+    def __post_init__(self) -> None:
+        if self.max_attempts < 1:
+            raise ValueError("max_attempts must be >= 1")
+        if self.base_delay_s < 0 or self.max_delay_s < 0 or self.multiplier < 1:
+            raise ValueError("invalid backoff parameters")
+
+    def is_retryable(self, exc: BaseException) -> bool:
+        if isinstance(exc, TRANSIENT_TIMEOUT_EXCEPTIONS):
+            return True
+        return not isinstance(exc, self.abort_on)
+
+    def delay_for(self, failed_attempt: int) -> float:
+        """Espera após a tentativa de número ``failed_attempt`` (1-based)."""
+        return min(self.max_delay_s, self.base_delay_s * (self.multiplier ** (failed_attempt - 1)))
+
+    def describe(self) -> dict[str, Any]:
+        return {
+            "max_attempts": self.max_attempts,
+            "base_delay_s": self.base_delay_s,
+            "multiplier": self.multiplier,
+            "max_delay_s": self.max_delay_s,
+            "abort_on": [t.__name__ for t in self.abort_on],
+        }
+
+
+@dataclass(frozen=True)
+class AttemptRecord:
+    """Uma tentativa de chamada. Tentativas que falharam não têm uso de tokens conhecido."""
+
+    index: int
+    outcome: str  # "ok" | "error"
+    wall_clock_ms: float
+    error_type: str | None = None
+    error_message: str | None = None
+    retryable: bool | None = None
+    backoff_s: float | None = None
+
+
+class LLMCallFailed(Exception):
+    """Todas as tentativas falharam, ou a falha não é retentável. Carrega tentativas e tempo total."""
+
+    def __init__(
+        self,
+        attempts: tuple[AttemptRecord, ...],
+        cause: BaseException,
+        wall_clock_ms: float,
+    ) -> None:
+        self.attempts = attempts
+        self.cause = cause
+        self.wall_clock_ms = wall_clock_ms
+        super().__init__(f"{type(cause).__name__}: {_truncate(str(cause))}")
+
+
+@dataclass(frozen=True)
+class ToolCall:
+    id: str
+    name: str
+    arguments: str
+
+    @property
+    def parsed_arguments(self) -> dict[str, Any]:
+        value = json.loads(self.arguments) if self.arguments else {}
+        if not isinstance(value, dict):
+            raise ValueError(f"tool call arguments must decode to an object, got {type(value).__name__}")
+        return value
+
+
+@dataclass(frozen=True)
+class LLMResponse:
+    """Resposta normalizada e contabilizada de uma chamada lógica (com suas tentativas).
+
+    Campos ``None`` significam não medidos.
+    """
+
+    content: str | None
+    tool_calls: tuple[ToolCall, ...] = field(default_factory=tuple)
+    model: str | None = None
+    model_returned: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    cost_usd: float | None = None
+    cost_basis: str = "unknown"
+    provider: str | None = None
+    api_id: str | None = None
+    wall_clock_ms: float | None = None
+    # Baldes de tokens (contrato v3). None = o provedor/litellm não expõe. Nunca derivados por subtração.
+    # uncached_input_tokens: o litellm 1.110.1 não expõe este campo, então fica None.
+    uncached_input_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    # Alias de cache_read_tokens (nome da v2, mantido). Subcampo, não somar ao total.
+    cached_input_tokens: int | None = None
+    # Subcampo de completion_tokens (não somar ao total).
+    # Nome canônico do balde de saída (= completion_tokens, inclui reasoning). Subcampo: não soma ao total.
+    output_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    pricing_source: str | None = None
+    # Snapshot aditivo dos subcampos de usage (prompt/completion_tokens_details, cache_creation_token_details).
+    # Telemetria de auditoria: não é campo do contrato v3 e nunca alimenta os baldes.
+    usage_details: dict[str, Any] | None = None
+    attempts: tuple[AttemptRecord, ...] = field(default_factory=tuple)
+
+
+CompletionFn = Callable[..., Any]
+CostFn = Callable[..., float]
+SleepFn = Callable[[float], None]
+
+
+class LLMClient:
+    """Cliente fino sobre ``litellm.completion`` com política de retentativa."""
+
+    def __init__(
+        self,
+        default_model: str | None = None,
+        *,
+        completion_fn: CompletionFn | None = None,
+        cost_fn: CostFn | None = None,
+        retry: RetryPolicy | None = None,
+        sleep_fn: SleepFn | None = None,
+        request_timeout_s: float | None = DEFAULT_REQUEST_TIMEOUT_S,
+        **default_params: Any,
+    ) -> None:
+        if request_timeout_s is not None and request_timeout_s <= 0:
+            raise ValueError("request_timeout_s must be > 0 or None")
+        if request_timeout_s is not None and "timeout" in default_params:
+            raise ValueError("pass request_timeout_s, not timeout, to LLMClient (ambiguous otherwise)")
+        self.default_model = default_model
+        self._completion = completion_fn or litellm.completion
+        self._cost = cost_fn or litellm.completion_cost
+        self.retry = retry or RetryPolicy()
+        self._sleep = sleep_fn or time.sleep
+        self.request_timeout_s = request_timeout_s
+        self._default_params = default_params
+
+    def config_snapshot(self) -> dict[str, Any]:
+        """Configuração não sensível do cliente (sem chaves de API nem valores de ambiente)."""
+        return {
+            "default_model": self.default_model,
+            "request_timeout_s": self.request_timeout_s,
+            "retry_policy": self.retry.describe(),
+            "pricing_source": PRICING_SOURCE,
+        }
+
+    def complete(
+        self,
+        messages: Sequence[Message],
+        tools: Sequence[Tool] | None = None,
+        model: str | None = None,
+    ) -> LLMResponse:
+        """Executa a chamada lógica, com retentativas, e devolve ``LLMResponse``.
+
+        Levanta ``LLMCallFailed`` (com as tentativas) quando a falha não é retentável ou
+        quando o limite de tentativas se esgota. Outras exceções, como erro de custo ou de
+        parsing da resposta, propagam como bugs.
+        """
+        effective_model = model or self.default_model
+        if not effective_model:
+            raise ValueError("no model: pass model= to complete() or default_model to LLMClient")
+        if not messages:
+            raise ValueError("messages must be a non-empty sequence")
+
+        kwargs: dict[str, Any] = dict(self._default_params)
+        if self.request_timeout_s is not None:
+            kwargs["timeout"] = self.request_timeout_s  # sem isto, um hang HTTP não levanta exceção
+        if tools:
+            kwargs["tools"] = list(tools)
+
+        attempts: list[AttemptRecord] = []
+        call_started = time.perf_counter()
+        raw: Any = None
+        attempt_no = 0
+        while True:
+            attempt_no += 1
+            started = time.perf_counter()
+            try:
+                raw = self._completion(model=effective_model, messages=list(messages), **kwargs)
+            except Exception as exc:  # noqa: BLE001 - fronteira do provedor; registrado, nunca silenciado
+                elapsed = (time.perf_counter() - started) * 1000.0
+                retryable = self.retry.is_retryable(exc)
+                more = retryable and attempt_no < self.retry.max_attempts
+                backoff = self.retry.delay_for(attempt_no) if more else None
+                attempts.append(AttemptRecord(
+                    index=attempt_no,
+                    outcome="error",
+                    wall_clock_ms=elapsed,
+                    error_type=type(exc).__name__,
+                    error_message=_truncate(str(exc)),
+                    retryable=retryable,
+                    backoff_s=backoff,
+                ))
+                if not more:
+                    total_ms = (time.perf_counter() - call_started) * 1000.0
+                    raise LLMCallFailed(tuple(attempts), exc, total_ms) from exc
+                self._sleep(backoff)  # type: ignore[arg-type]
+                continue
+            attempts.append(AttemptRecord(
+                index=attempt_no,
+                outcome="ok",
+                wall_clock_ms=(time.perf_counter() - started) * 1000.0,
+            ))
+            break
+        wall_clock_ms = (time.perf_counter() - call_started) * 1000.0
+
+        message = raw.choices[0].message
+        tool_calls = tuple(
+            ToolCall(id=str(tc.id), name=tc.function.name, arguments=tc.function.arguments or "")
+            for tc in (getattr(message, "tool_calls", None) or ())
+        )
+
+        usage = getattr(raw, "usage", None)
+        prompt_tokens = _int_or_none(getattr(usage, "prompt_tokens", None))
+        completion_tokens = _int_or_none(getattr(usage, "completion_tokens", None))
+        total_tokens = (
+            None if prompt_tokens is None or completion_tokens is None else prompt_tokens + completion_tokens
+        )
+        cost = self._cost_or_none(raw, effective_model)
+        cache_write = _detail(usage, "prompt_tokens_details", "cache_write_tokens")
+        if cache_write is None:
+            cache_write = _detail(usage, "prompt_tokens_details", "cache_creation_tokens")
+
+        return LLMResponse(
+            content=getattr(message, "content", None),
+            tool_calls=tool_calls,
+            model=effective_model,
+            model_returned=_str_or_none(getattr(raw, "model", None)),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            output_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            cost_usd=cost,
+            cost_basis=cost_basis_for(cost),
+            provider=_provider_of(raw),
+            api_id=_str_or_none(getattr(raw, "id", None)),
+            wall_clock_ms=wall_clock_ms,
+            uncached_input_tokens=None,
+            cache_write_tokens=cache_write,
+            cache_read_tokens=_detail(usage, "prompt_tokens_details", "cached_tokens"),
+            cached_input_tokens=_detail(usage, "prompt_tokens_details", "cached_tokens"),
+            reasoning_tokens=_detail(usage, "completion_tokens_details", "reasoning_tokens"),
+            pricing_source=PRICING_SOURCE if cost is not None else None,
+            usage_details=_usage_details(usage),
+            attempts=tuple(attempts),
+        )
+
+    def _cost_or_none(self, raw: Any, model: str) -> float | None:
+        """Custo em USD, ou ``None`` só quando o litellm não tem preço para o modelo.
+
+        Outras exceções propagam. Bug na função de custo não pode virar "preço desconhecido".
+        """
+        try:
+            return float(self._cost(completion_response=raw, model=model))
+        except BadRequestError:
+            return None
+
+
+def _truncate(text: str) -> str:
+    return text if len(text) <= ERROR_MAX_CHARS else text[:ERROR_MAX_CHARS] + "..."
+
+
+def _int_or_none(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _detail(usage: Any, container: str, field_name: str) -> int | None:
+    details = getattr(usage, container, None)
+    value = getattr(details, field_name, None) if details is not None else None
+    return _int_or_none(value)
+
+
+_USAGE_DETAIL_FIELDS = ("prompt_tokens_details", "completion_tokens_details", "cache_creation_token_details")
+
+
+def _usage_details(usage: Any) -> dict[str, Any] | None:
+    """Subcampos de usage que o provedor/litellm expõe, só os não nulos, em dict serializável.
+
+    ``cache_creation_token_details`` vem de ``prompt_tokens_details`` e é gravado no nível de cima (não duplicado).
+    Campo ausente é omitido, nunca 0. ``None`` quando não há usage nem subcampos.
+    """
+    if usage is None:
+        return None
+    out: dict[str, Any] = {}
+    for name in _USAGE_DETAIL_FIELDS:
+        if name == "cache_creation_token_details":
+            value = getattr(getattr(usage, "prompt_tokens_details", None), name, None)
+        else:
+            value = getattr(usage, name, None)
+        plain = _to_plain(value)
+        if name == "prompt_tokens_details" and isinstance(plain, dict):
+            plain.pop("cache_creation_token_details", None)  # gravado no nível de cima
+        if plain not in (None, {}, []):
+            out[name] = json.loads(json.dumps(plain, default=str))  # garante JSON no ledger
+    return out or None
+
+
+def _to_plain(value: Any) -> Any:
+    """Conversão recursiva para tipos JSON. Campos ``None`` são descartados; objetos viram dict ou texto."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, Mapping):
+        return {str(k): _to_plain(v) for k, v in value.items() if v is not None}
+    if isinstance(value, (list, tuple)):
+        return [_to_plain(v) for v in value]
+    if hasattr(value, "model_dump"):
+        return _to_plain(value.model_dump(exclude_none=True))
+    public = {k: v for k, v in vars(value).items() if not k.startswith("_")} if hasattr(value, "__dict__") else {}
+    return _to_plain(public) if public else str(value)
+
+
+def _provider_of(raw: Any) -> str | None:
+    hidden = getattr(raw, "_hidden_params", None)
+    if isinstance(hidden, Mapping):
+        return _str_or_none(hidden.get("custom_llm_provider"))
+    return None
+
+
+def _str_or_none(value: Any) -> str | None:
+    return str(value) if value not in (None, "") else None

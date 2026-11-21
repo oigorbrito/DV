@@ -10,7 +10,7 @@ Programa de pesquisa DV sobre composição mínima suficiente de capacidades de 
 
 ## Limite do sistema
 
-Dentro do limite: `tools/`, `experiments/`, `claims/`, `provenance/`, `pilot-runs/`, `policy/`, `scripts/` e `.github/workflows/`.
+Dentro do limite: `src/dv_harness/`, `tests/`, `tools/`, `experiments/`, `claims/`, `provenance/`, `pilot-runs/`, `policy/`, `scripts/` e `.github/workflows/`.
 
 Fora do limite: os executores externos (Codex, Aider, modelos locais via Ollama, Docker) e o dado público de origem. O repositório apenas os invoca.
 
@@ -19,13 +19,24 @@ Fora do limite: os executores externos (Codex, Aider, modelos locais via Ollama,
 | Componente | Conteúdo verificado |
 |---|---|
 | `tools/` | 122 arquivos Python, sendo 60 de teste (`test_*.py`). Os nomes seguem o prefixo legado `ndv_*` e os novos seguem `dv_*`. |
-| `experiments/` | 39 arquivos JSON de contratos congelados, protocolos e modelos de execução. |
+| `experiments/` | 41 arquivos JSON de contratos congelados, protocolos e modelos de execução. |
 | `claims/` | Registro de afirmações com estado e nível de evidência (`claims-v1.json`). |
 | `provenance/` | Inventário do histórico DV (`dv-legacy-manifest.json`). |
 | `pilot-runs/` | Registros de execuções piloto. |
 | `policy/` | Estado do projeto e seu schema, lidos pelo harness. |
 | `scripts/harness.py` | Harness de evidência e maturidade. Imprime `PASS`, `GAP`, `UNKNOWN_EXTERNAL` e `NOT_APPLICABLE`. |
-| `.github/workflows/` | 13 workflows de validação, de análise de segurança e de rotulagem. |
+| `src/dv_harness/context_manager.py` | Módulo 3 do harness modular: `ContextManager` com Observation Masking. Mantém `system`, `user` e `assistant` intactos. Mascara observações (`tool`) fora das `keep_recent_observations` mais recentes (padrão 10), preservando `tool_call_id`, e só quando a troca economiza caracteres. Não usa sumarização por LLM. Retorna cópia profunda e estatísticas (`CompactionStats`). Testes em `tests/test_context_manager.py`. |
+| `src/dv_harness/tool_executor.py` | Módulo 2: `ToolExecutor` com 4 primitivas (`read_file`, `write_file`, `edit_file`, `run_bash`), retorno `ToolResult` com `output` (truncado, para o modelo) e `raw_output` (completo, para auditoria). Ambiente do subprocesso por allowlist estrita (`ENV_ALLOWLIST`), sem chaves de API do host. Linhas divididas só em `\n`. `edit_file` normaliza CRLF apenas em arquivos inteiramente CRLF. Caminhos com byte nulo, ENAMETOOLONG, loops de link e fora do workspace viram `ToolResult(ok=False)`. Testes: `tests/test_tool_executor.py`. |
+| `src/dv_harness/agent_loop.py` | Módulo 4: `AgentLoop`, loop mínimo sobre `LLMClient`, `ToolExecutor` e `ContextManager`. Precedência de estados (D1): provider_error, budget_exceeded (tokens, depois custo conhecido, por cotas inferiores), budget_unverifiable, completed (submissão explícita via ferramenta `submit`), error_limit_reached (A2, padrão 3; só `PROTOCOL_ERROR` consecutivo conta, `DOMAIN_FAILURE` é observação), max_steps_reached. Texto sem ferramenta é erro de formato, não conclusão. `AgentResult` traz `calls` (um `CallRecord` por chamada lógica, com todas as tentativas), `tool_events` (saída bruta, SHA-256 e versão truncada), `partitions` (8 explícitas), `unmeasured` (motivo para cada null) e `outcome=None` (atribuído pelo avaliador). Testes: `tests/test_agent_loop.py`, `tests/test_properties.py`. |
+| `src/dv_harness/llm_client.py` | Módulo 1: `LLMClient`, adaptador fino sobre `litellm`. Política de retentativa (`RetryPolicy`, backoff exponencial sem jitter, lista de abortos de `litellm_model.py:50-57`). Cada tentativa vira `AttemptRecord`, inclusive as que falharam; esgotadas, levanta `LLMCallFailed` com todas. Usage ausente é `None`. `cost_basis` (`priced_by_table`, `priced_zero_by_table`, `unknown`). `model_returned` é o `raw.model` da API. Dependências fixadas em `requirements-dv-harness.txt`. Testes: `tests/test_llm_client.py`. |
+| `src/dv_harness/protocol.py` | Protocolo p1 v3 (v2 preservado): enums de estado (camada 1, `status`), outcome (camada 2: `SOLVED`/`FAILURE`/`INCONCLUSIVE`), `outcome_for` (tabela testada exaustivamente), `cost_basis_for` e `run_cost_basis`, lista de partições e motivos padronizados de não medido. Contrato em `experiments/p1/run-accounting-contract-v3.json` (v2 intacto, verificado por sha256). Define também `false_finish_rate` e os quatro baldes de tokens. O v1 é mantido sem alteração e verificado por sha256. Testes: `tests/test_protocol.py`. |
+| `src/dv_harness/ledger.py` | Ledger incremental (I1/D7): cada evento é gravado por linha com `fsync` antes de a execução prosseguir. `reconcile` detecta chamadas em voo após interrupção. Eventos: `run_started`, `call_started`, `call_finished`, `tool_finished` (com saída bruta), `run_finished`. Testes: `tests/test_ledger.py`. |
+| `scripts/dv_canary_check.py` | Teste de canário de ambiente (I3b): cinco vias de escape de `run_bash` contra arquivos-canário fora da raiz. Sai com 1 se algum canário muda. Dois modos: `--workdir` (isca gravável pelo mesmo usuário; I3b falso, as cinco vias escapam) e `--control-dir` (isca pré-provisionada em `--provision`, montada somente leitura no container; I3b **verdadeiro** dentro do container, ver `docs/TESTING.md`). O modo somente leitura mede o alcance de escrita do controle, não o confinamento do `run_bash`. |
+| `scripts/dv_smoke_run.py` | Smoke test exploratório com modelo real (uma tarefa, `max_steps=8`, `max_cost_usd=0.10`, `claude-haiku-5-5`). Modelo e chave parametrizados (`--model`, `--api-key-env`; padrão `claude-haiku-5-5` / `ANTHROPIC_API_KEY`); sem a chave, recusa rodar e sai com 2. Verifica proveniência, schema do ledger e vazamento de segredo. |
+| `scripts/dv_mutation_check.py` | Verificação por mutação reprodutível (POSIX/WSL): 57 mutantes (M01–M57), incluindo os do wrapper de container sobre o código de `src/`, aplicados numa cópia descartável. Mutante morto = algum teste falha. Executar: `python scripts/dv_mutation_check.py --workdir <dir> --json <arquivo>`. |
+| `scripts/dv_container_run.py` | Execução em container descartável com quotas fixas (`--cpus`, `--memory`, `--pids-limit`, `--network none`, timeout). Remove o container com `docker rm -f` após ler `OOMKilled`. Registra `infra_finished` no ledger com `oom_killed`, `timed_out`, `cmd_timeouts` e as quotas. Sem daemon, os testes usam `docker` simulado (`tests/test_container_run.py`). |
+| `Dockerfile` | Imagem mínima `python:3.12-slim`, usuário não-root, dependências fixadas em `requirements-dv-harness.txt`. O código entra por bind mount somente leitura, não por cópia. Build: `docker build -t dv-harness:local .`. |
+| `.github/workflows/` | 12 workflows ativos (`.yml`) de validação, análise de segurança e rotulagem, e 1 exemplo desativado (`scorecard.yml.example`). |
 
 ## Interfaces
 
@@ -39,6 +50,8 @@ Não existe um fluxo único. Cada pipeline é uma sequência de ferramentas, e a
 
 - **Executor:** antes de cada invocação, as variáveis de ambiente listadas no contrato da superfície são removidas (`environment_variables_removed`).
 - **Verificação de base e de verificador:** os contêineres Docker são criados com `--network none`.
+- **Container:** o wrapper aplica `--network none` por padrão, `--cap-drop ALL`, `--read-only`, quotas fixas e timeout. OOM e timeout de container são flags de infraestrutura, não comportamento do agente. Sem daemon Docker acessível, a execução real do canário dentro do container não foi observada.
+- **Plataforma:** `run_bash` usa `shell=True` (`cmd.exe` no Windows, `sh` no POSIX). Fora do POSIX não há `killpg`: o timeout mata apenas o shell, e processos netos podem sobreviver. O canário I3b e a mutação exigem POSIX (WSL/Linux).
 - **Execução de tarefas:** os runners exigem um token explícito de execução e recusam tarefas não admitidas. Esses controles estão no código, mas a execução real ainda não foi observada neste repositório.
 
 ## Invariantes
